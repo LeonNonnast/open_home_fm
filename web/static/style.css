@@ -1,0 +1,143 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --border: #2a2f3a;
+  --text: #e6e8ec;
+  --muted: #9aa2af;
+  --accent: #5b8cff;
+  --accent-2: #ff5b7f;
+  --ok: #4caf7d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+nav .brand { font-weight: 700; font-size: 1.1rem; }
+nav a { color: var(--muted); text-decoration: none; }
+nav a:hover, nav a.active { color: var(--text); }
+
+main {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+section.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+section.panel h2 {
+  margin-top: 0;
+  font-size: 1rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+textarea, input, select {
+  width: 100%;
+  background: #0d0f13;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.6rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+textarea { min-height: 160px; resize: vertical; font-family: ui-monospace, monospace; }
+
+label { display: block; margin-bottom: 0.3rem; color: var(--muted); font-size: 0.85rem; }
+
+.field { margin-bottom: 0.9rem; }
+
+.row { display: flex; gap: 1rem; }
+.row > .field { flex: 1; }
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0.6rem 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+button.danger { background: var(--accent-2); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.plugin-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.plugin-row:last-child { border-bottom: none; }
+.plugin-row .name { font-weight: 600; }
+.plugin-row .desc { color: var(--muted); font-size: 0.85rem; }
+
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: var(--border); border-radius: 24px; transition: 0.15s;
+}
+.slider::before {
+  content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px;
+  background: white; border-radius: 50%; transition: 0.15s;
+}
+input:checked + .slider { background: var(--ok); }
+input:checked + .slider::before { transform: translateX(18px); }
+
+.segment {
+  display: flex; gap: 0.6rem; align-items: baseline;
+  padding: 0.4rem 0; border-bottom: 1px dashed var(--border);
+}
+.segment .idx { color: var(--muted); font-size: 0.8rem; width: 1.5rem; }
+.segment .type { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 4px; }
+.segment .type.track { background: #24304d; color: #8fb3ff; }
+.segment .type.jingle { background: #402a3a; color: #ff9fc0; }
+
+.status-line { color: var(--muted); font-size: 0.85rem; }
+.toast { color: var(--ok); font-size: 0.85rem; height: 1rem; }
+
+#mic-btn {
+  width: 72px; height: 72px; border-radius: 50%;
+  font-size: 1.6rem; display: flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+}
+#mic-btn.recording { background: var(--accent-2); animation: pulse 1s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,91,127,0.5); } 100% { box-shadow: 0 0 0 14px rgba(255,91,127,0); } }
+
+.inbox-item { padding: 0.5rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+
+.history-item { padding: 0.75rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+.history-item:last-child { border-bottom: none; }
+.history-header { display: flex; justify-content: space-between; margin-bottom: 0.3rem; }
+.raw-transcript {
+  margin-top: 0.5rem; max-height: 300px; overflow: auto; font-size: 0.75rem;
+  background: #0d0f13; border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem;
+}

@@ -1,0 +1,10 @@
+name: get_favorite_songs
+description: Liefert die Lieblingssongs einer bekannten Person aus der lokalen Favoriten-Datenbank.
+parameters:
+  type: object
+  properties:
+    person:
+      type: string
+      description: Name der Person, z.B. "Opa Werner"
+  required: [person]
+enabled: true

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open home fm — Wünsche</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="brand">📻 open home fm</span>
+    <a href="/index.html">Konfiguration</a>
+    <a href="/inbox.html" class="active">Wünsche</a>
+  </nav>
+
+  <main>
+    <section class="panel">
+      <h2>Per Sprache</h2>
+      <button id="mic-btn">🎤</button>
+      <p class="status-line" style="text-align:center;">Zum Aufnehmen tippen, nochmal zum Beenden.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Per Text</h2>
+      <div class="field">
+        <textarea id="wish-text" placeholder="z.B. 'Spielt bitte etwas von Kraftwerk für meinen Opa Werner!'"></textarea>
+      </div>
+      <button id="send-text">Wunsch senden</button>
+      <span id="inbox-toast" class="toast"></span>
+    </section>
+
+    <section class="panel">
+      <h2>Offene Wünsche</h2>
+      <div id="inbox-list"><p class="status-line">Lädt...</p></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

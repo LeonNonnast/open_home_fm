@@ -1,0 +1,32 @@
+agent:
+  loop_interval_seconds: 300
+  max_tool_iterations: 8
+llm:
+  provider: ollama
+  ollama:
+    model: gpt-oss:120b-cloud
+    host: https://ollama.com
+  anthropic:
+    model: claude-sonnet-5
+music:
+  provider: local
+  spotify:
+    device_name: open-home-fm
+  local:
+    library_path: data/library
+audio:
+  output_device: default
+  jingle_cache_dir: data/audio_cache
+tts:
+  engine: piper
+  piper:
+    binary: piper
+    voice_model: models/tts/de_DE-thorsten-medium.onnx
+stt:
+  engine: faster_whisper
+  faster_whisper:
+    model_size: small
+    device: cpu
+    compute_type: int8
+plugins:
+  disabled: []

@@ -1,0 +1,13 @@
+name: get_news_headlines
+description: Liefert aktuelle Nachrichten-Schlagzeilen (Tagesschau RSS-Feed).
+parameters:
+  type: object
+  properties:
+    limit:
+      type: integer
+      description: Anzahl Schlagzeilen
+      default: 3
+  required: []
+enabled: true
+# Runs automatically each loop, result goes straight into the agent's input - no tool call needed.
+context: true

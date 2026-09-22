@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open home fm — Konfiguration</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="brand">📻 open home fm</span>
+    <a href="/index.html" class="active">Konfiguration</a>
+    <a href="/inbox.html">Wünsche</a>
+  </nav>
+
+  <main>
+    <section class="panel">
+      <h2>Status</h2>
+      <div id="status-panel"><p class="status-line">Lädt...</p></div>
+      <button id="trigger-now" class="secondary" style="margin-top:0.75rem;">Jetzt einen Durchlauf starten</button>
+    </section>
+
+    <section class="panel">
+      <h2>Systemprompt</h2>
+      <div class="field">
+        <textarea id="system-prompt" spellcheck="false"></textarea>
+      </div>
+      <button id="save-prompt">Speichern</button>
+      <span id="prompt-toast" class="toast"></span>
+    </section>
+
+    <section class="panel">
+      <h2>Agent-Konfiguration</h2>
+      <div class="row">
+        <div class="field">
+          <label for="llm-provider">LLM-Provider</label>
+          <select id="llm-provider">
+            <option value="ollama">Ollama</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="llm-model">Modell</label>
+          <input id="llm-model" type="text">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="music-provider">Musikquelle</label>
+          <select id="music-provider">
+            <option value="local">Lokale Bibliothek</option>
+            <option value="spotify">Spotify</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="loop-interval">Loop-Intervall (Sekunden)</label>
+          <input id="loop-interval" type="number" min="30" step="10">
+        </div>
+      </div>
+
+      <details>
+        <summary style="cursor:pointer; color: var(--muted); margin-bottom: 0.75rem;">Erweitert (vollständige config.yaml als JSON)</summary>
+        <div class="field">
+          <textarea id="raw-config" spellcheck="false" style="min-height: 320px;"></textarea>
+        </div>
+        <button id="sync-raw" class="secondary">Formularfelder aus JSON übernehmen</button>
+      </details>
+
+      <div style="margin-top:0.75rem;">
+        <button id="save-config">Konfiguration speichern</button>
+        <span id="config-toast" class="toast"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Plugins</h2>
+      <div id="plugin-list"><p class="status-line">Lädt...</p></div>
+    </section>
+
+    <section class="panel">
+      <h2>Verlauf</h2>
+      <div id="history-list"><p class="status-line">Lädt...</p></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
