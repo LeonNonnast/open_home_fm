@@ -56,6 +56,19 @@ oder es gezielt um Neues ergänzen kann. Sichtbar über den "Verlauf"-Bereich de
 
 ### Schnellstart
 
+Ein einziger Befehl - klont das Repo (falls noch nicht vorhanden) und startet den Installer:
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/LeonNonnast/open_home_fm/main/install.sh)"
+```
+
+(Bewusst `bash -c "$(curl ...)"` statt `curl ... | bash` - bei einer Pipe würde bash die
+interaktiven Rückfragen nicht mehr stellen können, weil die Pipe bereits vom Herunterladen des
+Scripts belegt ist.) Landet standardmäßig in `./open_home_fm` im aktuellen Verzeichnis; ein
+anderer Zielordner lässt sich per `OPEN_HOME_FM_DIR=/pfad bash -c "..."` vorgeben.
+
+Alternativ manuell:
+
 ```
 git clone https://github.com/LeonNonnast/open_home_fm.git
 cd open_home_fm
@@ -70,7 +83,7 @@ schreibt `.env` sowie `config/config.yaml` entsprechend. Danach direkt startklar
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Web-UI dann unter `http://<pi-ip>:8000/` erreichbar. `./install.sh` ist beliebig oft erneut
+Web-UI dann unter `http://<pi-ip>:8000/` erreichbar. Der Installer ist beliebig oft erneut
 ausführbar (z.B. um die Musikquelle später zu wechseln) und schlägt dabei die zuletzt
 eingetragenen Werte als Default vor.
 

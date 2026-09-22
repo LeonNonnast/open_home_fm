@@ -5,8 +5,30 @@
 # provider + credentials, music source, TTS/STT), and writes .env + config/config.yaml
 # accordingly. Safe to re-run - existing answers are offered as defaults.
 #
-# Usage: ./install.sh
+# Usage (already cloned):  ./install.sh
+# Usage (one-liner):       bash -c "$(curl -fsSL https://raw.githubusercontent.com/LeonNonnast/open_home_fm/main/install.sh)"
+#
+# Note: use `bash -c "$(curl ...)"`, not `curl ... | bash` - piping into bash consumes stdin
+# with the script itself, which breaks the interactive prompts below.
 set -euo pipefail
+
+REPO_URL="https://github.com/LeonNonnast/open_home_fm.git"
+
+# No local checkout yet (e.g. fetched standalone via the one-liner above)? Clone one and
+# re-exec this same script from inside it, so the rest of the installer can assume it's
+# running from within the repo.
+if [ ! -f "pyproject.toml" ]; then
+  TARGET_DIR="${OPEN_HOME_FM_DIR:-$PWD/open_home_fm}"
+  if [ -d "$TARGET_DIR/.git" ]; then
+    echo "==> Bestehende Installation in $TARGET_DIR gefunden, aktualisiere..."
+    git -C "$TARGET_DIR" pull --ff-only
+  else
+    echo "==> Klone open home fm nach $TARGET_DIR ..."
+    git clone "$REPO_URL" "$TARGET_DIR"
+  fi
+  cd "$TARGET_DIR"
+  exec bash install.sh "$@"
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
