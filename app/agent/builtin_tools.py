@@ -25,7 +25,7 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
         if not tracks:
             return f"Keine Treffer für '{query}'."
         return "\n".join(
-            f"- {t.title} von {t.artist} (uri={t.uri}, dauer={t.duration_seconds or '?'}s)"
+            f"- {t.title}{f' von {t.artist}' if t.artist else ''} (uri={t.uri}, dauer={t.duration_seconds or '?'}s)"
             for t in tracks
         )
 
@@ -39,7 +39,7 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
         tracks = provider.get_playlist_tracks(playlist_id)
         if not tracks:
             return f"Playlist '{playlist_id}' ist leer oder existiert nicht."
-        return "\n".join(f"- {t.title} von {t.artist} (uri={t.uri})" for t in tracks)
+        return "\n".join(f"- {t.title}{f' von {t.artist}' if t.artist else ''} (uri={t.uri})" for t in tracks)
 
     def find_devices() -> str:
         devices = provider.list_devices()

@@ -3,37 +3,71 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>open home fm — Wünsche</title>
+  <title>open home fm · Wünsche</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Chivo+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <nav>
-    <span class="brand">📻 open home fm</span>
-    <a href="/index.html">Konfiguration</a>
-    <a href="/inbox.html" class="active">Wünsche</a>
-  </nav>
-
-  <main>
-    <section class="panel">
-      <h2>Per Sprache</h2>
-      <button id="mic-btn">🎤</button>
-      <p class="status-line" style="text-align:center;">Zum Aufnehmen tippen, nochmal zum Beenden.</p>
-    </section>
-
-    <section class="panel">
-      <h2>Per Text</h2>
-      <div class="field">
-        <textarea id="wish-text" placeholder="z.B. 'Spielt bitte etwas von Kraftwerk für meinen Opa Werner!'"></textarea>
+  <div class="wrap">
+    <header class="console">
+      <a class="wordmark" href="/index.html">open home<span>.fm</span></a>
+      <nav class="tabs" aria-label="Bereiche">
+        <a href="/index.html">Studio</a>
+        <a href="/inbox.html" aria-current="page">Wünsche</a>
+      </nav>
+      <div class="lamp" id="lamp" data-state="unknown" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="lamp-label">…</span>
+        <span class="clock" id="clock"></span>
       </div>
-      <button id="send-text">Wunsch senden</button>
-      <span id="inbox-toast" class="toast"></span>
-    </section>
+    </header>
 
-    <section class="panel">
-      <h2>Offene Wünsche</h2>
-      <div id="inbox-list"><p class="status-line">Lädt...</p></div>
-    </section>
-  </main>
+    <main class="inbox">
+      <div class="inbox-intro">
+        <h1>Was sollen wir spielen?</h1>
+        <p>Musikwunsch, Gruß oder Nachricht - der Agent baut ihn in den nächsten Sendeablauf ein.</p>
+      </div>
+
+      <section class="card" aria-labelledby="h-voice">
+        <div class="card-head">
+          <h2 id="h-voice">Einsprechen</h2>
+        </div>
+        <div class="recorder">
+          <button class="rec-btn" id="mic-btn" type="button" aria-label="Aufnahme starten">
+            <svg class="icon-mic" viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+            <svg class="icon-stop" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+          </button>
+          <div class="rec-state">
+            <strong id="rec-label">Tippen zum Aufnehmen</strong>
+            <span class="rec-timer" id="rec-timer">Nochmal tippen beendet die Aufnahme.</span>
+          </div>
+        </div>
+        <p class="transcript" id="transcript" hidden></p>
+      </section>
+
+      <section class="card" aria-labelledby="h-text">
+        <div class="card-head">
+          <h2 id="h-text">Aufschreiben</h2>
+        </div>
+        <label for="wish-text" hidden>Dein Wunsch</label>
+        <textarea id="wish-text" rows="4" placeholder="z.B. „Spielt bitte etwas von Kraftwerk für Opa Werner!“"></textarea>
+        <div class="card-foot">
+          <button class="btn signal" id="send-text" type="button">Wunsch senden</button>
+          <span class="note" id="inbox-note" role="status"></span>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-queue">
+        <div class="card-head">
+          <h2 id="h-queue">In der Warteschlange</h2>
+          <span class="meta" id="queue-meta"></span>
+        </div>
+        <ul class="queue" id="inbox-list"></ul>
+      </section>
+    </main>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

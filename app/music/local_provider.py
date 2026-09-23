@@ -32,12 +32,12 @@ def _read_metadata(path: Path) -> tuple[str, str, float | None]:
         audio = MutagenFile(path, easy=True)
         if audio is not None:
             title = (audio.get("title") or [path.stem])[0]
-            artist = (audio.get("artist") or ["Unknown"])[0]
+            artist = (audio.get("artist") or [""])[0]
             duration = getattr(audio.info, "length", None) if audio.info else None
             return title, artist, duration
     except Exception:
         logger.debug("Falling back to filename metadata for %s", path, exc_info=True)
-    return path.stem, "Unknown", None
+    return path.stem, "", None
 
 
 class LocalMusicProvider(MusicProvider):
