@@ -54,6 +54,26 @@ oder es gezielt um Neues ergänzen kann. Sichtbar über den "Verlauf"-Bereich de
 
 ## Setup (Raspberry Pi)
 
+### Voraussetzungen
+
+Der Installer prüft diese Punkte als Erstes, zeigt pro Punkt `[ok]`/`[fehlt]` an und bietet an,
+Fehlendes per apt nachzuinstallieren. Fehlt danach noch etwas, bricht er mit einer Anleitung ab.
+
+| Voraussetzung | Wofür | Installation |
+| --- | --- | --- |
+| git | Klonen/Aktualisieren des Repos | `sudo apt-get install git` |
+| curl | One-Liner-Install, raspotify-Installer | `sudo apt-get install curl` |
+| Python ≥ 3.11 | App | Raspberry Pi OS Bookworm oder neuer (`python3 --version`) |
+| python3-venv | Virtualenv unter `.venv/` | `sudo apt-get install python3-venv` |
+| ffplay (ffmpeg) | Lokales Playback + Jingles | `sudo apt-get install ffmpeg` |
+
+Nur für die jeweils gewählte Option (prüft der Installer am Ende und listet offene Punkte auf):
+
+| Option | Voraussetzung | Installation |
+| --- | --- | --- |
+| Spotify | Spotify Premium + raspotify mit `LIBRESPOT_NAME` = `music.spotify.device_name` | `curl -sL https://dtcooper.github.io/raspotify/install.sh \| sh`, Name in `/etc/raspotify/conf` setzen, `sudo systemctl restart raspotify` (übernimmt der Installer) |
+| Piper-TTS | `piper` im PATH + Stimmmodell (`.onnx` + `.onnx.json`) | [Piper-Releases](https://github.com/rhasspy/piper/releases), Modell nach `models/tts/` |
+
 ### Schnellstart
 
 Ein einziger Befehl - klont das Repo (falls noch nicht vorhanden) und startet den Installer:
@@ -75,7 +95,7 @@ cd open_home_fm
 ./install.sh
 ```
 
-Das Script installiert die System-/Python-Abhängigkeiten, fragt interaktiv die nötige
+Das Script prüft die [Voraussetzungen](#voraussetzungen), installiert die Python-Abhängigkeiten, fragt interaktiv die nötige
 Konfiguration ab (LLM-Provider + API-Key, Musikquelle, TTS, Audio-Ausgang, Loop-Intervall) und
 schreibt `.env` sowie `config/config.yaml` entsprechend. Danach direkt startklar:
 
@@ -101,7 +121,8 @@ eingetragenen Werte als Default vor.
 4. **Musikquelle wählen** (`config/config.yaml` → `music.provider`):
    - `local`: Audiodateien nach `data/library/<Playlist-Ordner>/*.mp3` legen.
    - `spotify`: [raspotify](https://github.com/dtcooper/raspotify) installieren (macht den Pi zu
-     einem Spotify-Connect-Gerät), Spotify-App unter developer.spotify.com anlegen (Redirect-URI:
+     einem Spotify-Connect-Gerät) und in `/etc/raspotify/conf` `LIBRESPOT_NAME="open-home-fm"`
+     setzen (muss zu `music.spotify.device_name` passen), Spotify-App unter developer.spotify.com anlegen (Redirect-URI:
      `http://127.0.0.1:8888/callback`), Zugangsdaten in `.env` eintragen und einmalig
      `.venv/bin/python scripts/spotify_login.py` ausführen (funktioniert auch headless: Link auf
      PC/Handy öffnen, weitergeleitete URL zurück ins Terminal kopieren). Der Installer erledigt

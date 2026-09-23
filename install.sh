@@ -18,6 +18,10 @@ REPO_URL="https://github.com/LeonNonnast/open_home_fm.git"
 # re-exec this same script from inside it, so the rest of the installer can assume it's
 # running from within the repo.
 if [ ! -f "pyproject.toml" ]; then
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git fehlt - zuerst installieren: sudo apt-get install git" >&2
+    exit 1
+  fi
   TARGET_DIR="${OPEN_HOME_FM_DIR:-$PWD/open_home_fm}"
   if [ -d "$TARGET_DIR/.git" ]; then
     echo "==> Bestehende Installation in $TARGET_DIR gefunden, aktualisiere..."
@@ -77,18 +81,51 @@ echo "Beantworte ein paar Fragen, danach ist das System startklar."
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. System packages
+# 1. Prerequisites
 # ---------------------------------------------------------------------------
-info "System-Pakete"
-if command -v apt-get >/dev/null 2>&1; then
-  if [ "$(ask_yes_no "python3-venv und ffmpeg via apt installieren (braucht sudo)?" y)" = "true" ]; then
+# Checked before anything is installed, so a missing tool fails here with a clear hint instead
+# of halfway through with a cryptic error. Each entry: name | check command | apt package | hint.
+PREREQS=(
+  "git|command -v git|git|https://git-scm.com/downloads"
+  "curl|command -v curl|curl|https://curl.se/download.html"
+  "python3 >= 3.11|python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'|python3|Raspberry Pi OS Bookworm oder neuer liefert Python 3.11"
+  "python3-venv|python3 -c 'import venv, ensurepip'|python3-venv|Paket python3-venv installieren"
+  "ffplay (ffmpeg)|command -v ffplay|ffmpeg|https://ffmpeg.org/download.html"
+)
+
+check_prereqs() {
+  # check_prereqs -> prints a status line per prerequisite, fills MISSING_* arrays
+  MISSING_NAMES=(); MISSING_PKGS=(); MISSING_HINTS=()
+  local entry name check pkg hint
+  for entry in "${PREREQS[@]}"; do
+    IFS='|' read -r name check pkg hint <<<"$entry"
+    if bash -c "$check" >/dev/null 2>&1; then
+      echo "    ${BOLD}[ok]${RESET}     $name"
+    else
+      echo "    ${BOLD}[fehlt]${RESET}  $name"
+      MISSING_NAMES+=("$name"); MISSING_PKGS+=("$pkg"); MISSING_HINTS+=("$hint")
+    fi
+  done
+}
+
+info "Voraussetzungen prüfen"
+check_prereqs
+if [ "${#MISSING_NAMES[@]}" -gt 0 ] && command -v apt-get >/dev/null 2>&1; then
+  if [ "$(ask_yes_no "Fehlende Pakete via apt installieren (${MISSING_PKGS[*]}, braucht sudo)?" y)" = "true" ]; then
     sudo apt-get update -y
-    sudo apt-get install -y python3-venv ffmpeg
-  else
-    note "Übersprungen - stelle sicher, dass 'python3 -m venv' und 'ffplay' verfügbar sind."
+    sudo apt-get install -y "${MISSING_PKGS[@]}"
+    info "Erneut prüfen"
+    check_prereqs
   fi
-else
-  note "Kein apt gefunden - stelle sicher, dass Python venv und ffmpeg/ffplay bereits installiert sind."
+fi
+if [ "${#MISSING_NAMES[@]}" -gt 0 ]; then
+  echo ""
+  echo "${BOLD}Installation abgebrochen - folgende Voraussetzungen fehlen:${RESET}"
+  for i in "${!MISSING_NAMES[@]}"; do
+    echo "  - ${MISSING_NAMES[$i]}: sudo apt-get install ${MISSING_PKGS[$i]}  (${MISSING_HINTS[$i]})"
+  done
+  echo "Danach ./install.sh erneut ausführen. Details: README.md -> Voraussetzungen."
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -166,7 +203,24 @@ if [ "$MUSIC_CHOICE" = "2" ]; then
     fi
   done
   SPOTIFY_DEVICE_NAME="$(ask "Name des raspotify Connect-Geräts" "${SPOTIFY_DEVICE_NAME:-open-home-fm}")"
-  note "Vergiss nicht, raspotify auf diesem Gerät zu installieren (siehe README)."
+  # The name above only reaches config.yaml - raspotify announces itself as
+  # "raspotify (<hostname>)" unless LIBRESPOT_NAME is set in its own config, so the device
+  # would never show up under this name in the Spotify app.
+  RASPOTIFY_CONF="/etc/raspotify/conf"
+  if [ "$(ask_yes_no "raspotify installieren/konfigurieren (braucht sudo)?" y)" = "true" ]; then
+    if [ ! -f "$RASPOTIFY_CONF" ]; then
+      curl -sL https://dtcooper.github.io/raspotify/install.sh | sh
+    fi
+    if sudo grep -qE '^#?\s*LIBRESPOT_NAME=' "$RASPOTIFY_CONF"; then
+      sudo sed -i -E "s|^#?\s*LIBRESPOT_NAME=.*|LIBRESPOT_NAME=\"$SPOTIFY_DEVICE_NAME\"|" "$RASPOTIFY_CONF"
+    else
+      echo "LIBRESPOT_NAME=\"$SPOTIFY_DEVICE_NAME\"" | sudo tee -a "$RASPOTIFY_CONF" >/dev/null
+    fi
+    sudo systemctl restart raspotify
+    note "raspotify läuft als '$SPOTIFY_DEVICE_NAME' - in der Spotify-App (gleiches WLAN) auswählbar."
+  else
+    note "Übersprungen - setze LIBRESPOT_NAME=\"$SPOTIFY_DEVICE_NAME\" in $RASPOTIFY_CONF selbst."
+  fi
 else
   MUSIC_PROVIDER="local"
   LIBRARY_PATH="$(ask "Pfad zur lokalen Musikbibliothek" "${LIBRARY_PATH:-data/library}")"
@@ -248,7 +302,41 @@ config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=Fals
 print("config/config.yaml aktualisiert.")
 PYEOF
 
+# ---------------------------------------------------------------------------
+# 6. Feature-specific checks
+# ---------------------------------------------------------------------------
+# Things only needed for the chosen options. Not fatal - the config is written either way - but
+# listed explicitly, since e.g. a missing raspotify only shows up later as "no device in the app".
+OPEN_ITEMS=()
+if [ "$MUSIC_PROVIDER" = "spotify" ]; then
+  if ! systemctl cat raspotify >/dev/null 2>&1; then
+    OPEN_ITEMS+=("raspotify fehlt: curl -sL https://dtcooper.github.io/raspotify/install.sh | sh")
+  else
+    if ! sudo grep -q "^LIBRESPOT_NAME=\"$SPOTIFY_DEVICE_NAME\"" /etc/raspotify/conf 2>/dev/null; then
+      OPEN_ITEMS+=("raspotify-Name passt nicht: LIBRESPOT_NAME=\"$SPOTIFY_DEVICE_NAME\" in /etc/raspotify/conf setzen, dann sudo systemctl restart raspotify")
+    fi
+    if ! systemctl is-active --quiet raspotify; then
+      OPEN_ITEMS+=("raspotify läuft nicht: sudo systemctl restart raspotify, Log: journalctl -u raspotify -n 50")
+    fi
+  fi
+fi
+if [ "$TTS_ENGINE" = "piper" ]; then
+  if ! command -v piper >/dev/null 2>&1; then
+    OPEN_ITEMS+=("piper nicht im PATH: Binary von https://github.com/rhasspy/piper/releases installieren")
+  fi
+  if [ ! -f "$PIPER_VOICE_MODEL" ] || [ ! -f "$PIPER_VOICE_MODEL.json" ]; then
+    OPEN_ITEMS+=("Piper-Stimmmodell fehlt: $PIPER_VOICE_MODEL + .onnx.json von https://github.com/rhasspy/piper/releases ablegen")
+  fi
+fi
+
 echo ""
+if [ "${#OPEN_ITEMS[@]}" -gt 0 ]; then
+  info "Noch offen - ohne diese Punkte funktionieren die gewählten Optionen nicht:"
+  for item in "${OPEN_ITEMS[@]}"; do
+    echo "  - $item"
+  done
+  echo ""
+fi
 info "Fertig!"
 note "Start: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
 note "Web-UI dann unter http://<host>:8000/"
