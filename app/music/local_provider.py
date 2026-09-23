@@ -76,6 +76,9 @@ class LocalMusicProvider(MusicProvider):
         matches = process.extract(query, choices, scorer=fuzz.WRatio, limit=limit)
         return [self._tracks_by_id[tid] for _, _score, tid in matches]
 
+    def get_track_by_uri(self, uri: str) -> Track | None:
+        return next((t for t in self._tracks_by_id.values() if t.uri == uri), None)
+
     def list_playlists(self) -> list[Playlist]:
         if not self.library_path.exists():
             return []

@@ -59,6 +59,11 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
         provider.play(track, device)
         return f"Spiele jetzt: {track_uri}"
 
+    # Tool-calling models don't always stick to the enum in the schema below (observed in
+    # practice: a model announcing spoken segments as "announcement" instead of "jingle") -
+    # tolerate the common synonyms rather than silently dropping the segment.
+    JINGLE_TYPE_ALIASES = {"jingle", "announcement", "announce", "tts", "speech", "ansage", "voice"}
+
     def set_playback_script(segments: list[dict[str, Any]]) -> str:
         """Finalizes this loop iteration's program. Called exactly once, at the end.
 
@@ -68,25 +73,41 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
         """
         resolved: list[Segment] = []
         for raw in segments:
-            seg_type = raw.get("type")
+            seg_type = (raw.get("type") or "").lower()
+            if seg_type not in {"track", *JINGLE_TYPE_ALIASES}:
+                # Some models drop the `type` field entirely (observed in practice) - infer it
+                # from whichever content field was actually supplied rather than dropping the
+                # segment outright.
+                if raw.get("uri") or raw.get("query"):
+                    seg_type = "track"
+                elif raw.get("text"):
+                    seg_type = "jingle"
+
             if seg_type == "track":
+                # Models sometimes echo the `uri` from an earlier search_songs result instead
+                # of restating the search text - try that exact lookup before falling back to
+                # a fresh text search.
+                uri = raw.get("uri")
                 query = raw.get("query", "")
-                candidates = provider.search_tracks(query, limit=1)
-                if not candidates:
-                    logger.warning("set_playback_script: no match for query '%s', skipping", query)
+                track = provider.get_track_by_uri(uri) if uri else None
+                if track is None:
+                    candidates = provider.search_tracks(query or uri or "", limit=1)
+                    track = candidates[0] if candidates else None
+                if track is None:
+                    logger.warning("set_playback_script: no track resolved for %r, skipping", raw)
                     continue
-                track = candidates[0]
+                title = f"{track.title} - {track.artist}" if track.artist else track.title
                 resolved.append(
                     Segment(
                         type="track",
-                        title=f"{track.title} - {track.artist}",
+                        title=title,
                         audio_ref=track.uri,
                         provider=provider.name,
                         duration_seconds=track.duration_seconds,
                     )
                 )
-            elif seg_type == "jingle":
-                text = raw.get("text", "").strip()
+            elif seg_type in JINGLE_TYPE_ALIASES:
+                text = (raw.get("text") or "").strip()
                 if not text:
                     continue
                 audio_path = tts_engine.synthesize(text)
@@ -158,7 +179,9 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
             name="set_playback_script",
             description=(
                 "Finalisiert das Sendeprogramm dieses Durchlaufs als geordnete Liste aus Song- "
-                "und Jingle-Segmenten. Genau einmal am Ende des Durchlaufs aufrufen."
+                "und Jingle-Segmenten. Genau einmal am Ende des Durchlaufs aufrufen. Track-"
+                "Segmente: 'query' (Suchtext) oder 'uri' (aus search_songs/get_playlist_tracks). "
+                "Jingle-Segmente: 'text' (wird als Audio gesprochen)."
             ),
             parameters={
                 "type": "object",
@@ -170,6 +193,7 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
                             "properties": {
                                 "type": {"type": "string", "enum": ["track", "jingle"]},
                                 "query": {"type": "string"},
+                                "uri": {"type": "string"},
                                 "text": {"type": "string"},
                             },
                             "required": ["type"],

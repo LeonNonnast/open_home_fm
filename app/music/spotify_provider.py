@@ -65,6 +65,14 @@ class SpotifyMusicProvider(MusicProvider):
                 tracks.append(self._to_track(track))
         return tracks
 
+    def get_track_by_uri(self, uri: str) -> Track | None:
+        try:
+            item = self.sp.track(uri)
+        except Exception:
+            logger.warning("Could not resolve Spotify track uri '%s'", uri, exc_info=True)
+            return None
+        return self._to_track(item)
+
     def list_devices(self) -> list[Device]:
         result = self.sp.devices()
         return [

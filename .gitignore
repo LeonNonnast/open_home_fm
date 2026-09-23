@@ -11,11 +11,13 @@ data/processed/*
 data/playlists/*
 data/audio_cache/*
 data/transcripts/*
+data/library/*
 !data/inbox/.gitkeep
 !data/processed/.gitkeep
 !data/playlists/.gitkeep
 !data/audio_cache/.gitkeep
 !data/transcripts/.gitkeep
+!data/library/.gitkeep
 data/state.json
 *.onnx
 *.onnx.json

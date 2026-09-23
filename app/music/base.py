@@ -53,6 +53,15 @@ class MusicProvider(ABC):
         ...
 
     @abstractmethod
+    def get_track_by_uri(self, uri: str) -> Track | None:
+        """Exact lookup for a uri already known (e.g. from an earlier search_tracks result).
+
+        Used when finalizing a script: the LLM sometimes echoes the `uri` field from a prior
+        tool result instead of the originally-requested search text, so resolving by uri first
+        (falling back to a fresh search) is more reliable than only ever searching by text.
+        """
+
+    @abstractmethod
     def list_devices(self) -> list[Device]:
         ...
 
