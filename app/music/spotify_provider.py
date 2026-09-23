@@ -60,14 +60,30 @@ class SpotifyMusicProvider(MusicProvider):
             logger.error("No Spotify login stored - Spotify calls will fail. %s", LOGIN_HINT)
         self.sp = spotipy.Spotify(auth_manager=auth_manager)
 
-    def _resolve_device_id(self, device: Device | None) -> str | None:
-        if device is not None:
-            return device.id
-        for d in self.list_devices():
-            if d.name == self.device_name:
-                return d.id
+    def _resolve_device(self, device: Device | None) -> Device | None:
         devices = self.list_devices()
-        return devices[0].id if devices else None
+        if device is not None:
+            # The agent sometimes passes a device name instead of the id from find_devices.
+            wanted = device.id.casefold()
+            for d in devices:
+                if d.id == device.id or d.name.casefold() == wanted:
+                    return d
+            logger.warning("Requested Spotify device '%s' not found, falling back", device.id)
+        configured = self.device_name.casefold()
+        for d in devices:
+            if d.name.casefold() == configured:
+                return d
+        if devices:
+            logger.warning(
+                "Spotify device '%s' not found (available: %s) - using the active device instead",
+                self.device_name,
+                ", ".join(d.name for d in devices),
+            )
+        # Prefer whatever the user is currently listening on over an arbitrary first device.
+        for d in devices:
+            if d.is_active:
+                return d
+        return devices[0] if devices else None
 
     def search_tracks(self, query: str, limit: int = 10) -> list[Track]:
         result = self.sp.search(q=query, type="track", limit=limit)
@@ -106,11 +122,15 @@ class SpotifyMusicProvider(MusicProvider):
         ]
 
     def play(self, track: Track, device: Device | None = None) -> None:
-        device_id = self._resolve_device_id(device)
-        if device_id is None:
+        target = self._resolve_device(device)
+        if target is None:
             raise RuntimeError("No Spotify Connect device available (is raspotify running?)")
-        logger.info("Playing on Spotify device %s: %s - %s", device_id, track.artist, track.title)
-        self.sp.start_playback(device_id=device_id, uris=[track.uri])
+        if not target.is_active:
+            # start_playback on an idle Connect device (e.g. raspotify after a restart) is often
+            # ignored or answered with 404 - activating it via transfer first makes it reliable.
+            self.sp.transfer_playback(device_id=target.id, force_play=False)
+        logger.info("Playing on Spotify device %s: %s - %s", target.name, track.artist, track.title)
+        self.sp.start_playback(device_id=target.id, uris=[track.uri])
 
     def play_and_wait(self, track: Track, device: Device | None = None) -> None:
         self.play(track, device)
@@ -127,9 +147,9 @@ class SpotifyMusicProvider(MusicProvider):
                 break
 
     def stop(self, device: Device | None = None) -> None:
-        device_id = self._resolve_device_id(device)
-        if device_id:
-            self.sp.pause_playback(device_id=device_id)
+        target = self._resolve_device(device)
+        if target:
+            self.sp.pause_playback(device_id=target.id)
 
     @staticmethod
     def _to_track(item: dict) -> Track:
