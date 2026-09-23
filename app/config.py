@@ -7,6 +7,7 @@ the config API must always see the latest version.
 from __future__ import annotations
 
 import threading
+from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import Any
 
@@ -49,3 +50,27 @@ def resolve_path(relative: str) -> Path:
     """Resolve a config value that may be relative to the project root."""
     path = Path(relative)
     return path if path.is_absolute() else ROOT_DIR / path
+
+
+def _parse_hhmm(value: str) -> dtime:
+    return datetime.strptime(value, "%H:%M").time()
+
+
+def is_broadcast_time(config: dict[str, Any], now: datetime | None = None) -> bool:
+    """Whether the station should currently be generating/playing a program.
+
+    `schedule.enabled: false` (the default) means "always on air". When enabled, `start_time`/
+    `end_time` ("HH:MM") define a daily window; an end time earlier than the start time is
+    treated as spanning midnight (e.g. 22:00-06:00).
+    """
+    schedule = config.get("schedule", {})
+    if not schedule.get("enabled", False):
+        return True
+
+    current = (now or datetime.now()).time()
+    start = _parse_hhmm(schedule.get("start_time", "00:00"))
+    end = _parse_hhmm(schedule.get("end_time", "23:59"))
+
+    if start <= end:
+        return start <= current <= end
+    return current >= start or current <= end

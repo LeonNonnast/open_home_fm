@@ -6,7 +6,7 @@ import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.agent.loop import AgentLoop
-from app.config import load_config
+from app.config import is_broadcast_time, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,10 @@ class AgentScheduler:
         self._job = None
 
     def _tick(self) -> None:
+        config = load_config()
+        if not is_broadcast_time(config):
+            logger.info("Outside configured broadcast hours, skipping agent loop tick")
+            return
         try:
             logger.info("Agent loop tick starting")
             self.agent_loop.run_once()
@@ -35,9 +39,6 @@ class AgentScheduler:
         if self._job is not None:
             self._job.reschedule(trigger="interval", seconds=interval_seconds)
             logger.info("Agent scheduler rescheduled, interval=%ds", interval_seconds)
-
-    def trigger_now(self) -> None:
-        self._scheduler.add_job(self._tick)
 
     def stop(self) -> None:
         self._scheduler.shutdown(wait=False)

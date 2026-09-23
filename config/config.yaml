@@ -1,32 +1,63 @@
+# open-home-fm main configuration.
+# Editable by hand or via the web UI (Settings page writes back to this file).
+#
+# Note: saving through the web UI/API rewrites this whole file via a plain YAML dump, which
+# does not preserve comments - they're documentation for hand-editing, not enforced at runtime.
+
 agent:
+  # How often the agent loop wakes up and processes the inbox / builds the next script.
   loop_interval_seconds: 300
+  # Max tool-call round-trips per loop iteration, guards against runaway loops.
   max_tool_iterations: 8
+
+schedule:
+  # false (default) = always on air. true restricts generation + playback to the daily window
+  # below (editable via the web UI). An end_time earlier than start_time spans midnight.
+  enabled: false
+  start_time: "06:00"
+  end_time: "23:00"
+
 llm:
+  # "ollama" (local or Ollama Cloud) | "anthropic"
   provider: ollama
   ollama:
-    model: gpt-oss:120b-cloud
-    host: https://ollama.com
+    model: "gpt-oss:120b-cloud"
+    # Leave empty for a local Ollama daemon (http://localhost:11434).
+    # Set to https://ollama.com for Ollama Cloud (needs OLLAMA_API_KEY in .env).
+    host: "https://ollama.com"
   anthropic:
-    model: claude-sonnet-5
+    model: "claude-sonnet-5"
+
 music:
+  # "spotify" | "local"
   provider: local
   spotify:
-    device_name: open-home-fm
+    # Spotify Connect device name exposed by raspotify (see /etc/raspotify/conf).
+    device_name: "open-home-fm"
   local:
-    library_path: data/library
+    library_path: "data/library"
+
 audio:
-  output_device: default
-  jingle_cache_dir: data/audio_cache
+  # ALSA/PulseAudio output sink that feeds the FM transmitter chain.
+  # Both the local music provider and the jingle/TTS player write here.
+  output_device: "default"
+  jingle_cache_dir: "data/audio_cache"
+
 tts:
+  # "piper" (local) | "none"
   engine: piper
   piper:
-    binary: piper
-    voice_model: models/tts/de_DE-thorsten-medium.onnx
+    binary: "piper"
+    voice_model: "models/tts/de_DE-thorsten-medium.onnx"
+
 stt:
+  # "faster_whisper" (local) | "none"
   engine: faster_whisper
   faster_whisper:
-    model_size: small
-    device: cpu
-    compute_type: int8
+    model_size: "small"
+    device: "cpu"
+    compute_type: "int8"
+
 plugins:
+  # Plugin folders under ./plugins are auto-discovered; individually disable here by name.
   disabled: []

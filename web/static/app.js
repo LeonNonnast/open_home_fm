@@ -41,13 +41,23 @@ async function initConfigPage() {
   const llmModel = document.getElementById("llm-model");
   const musicProvider = document.getElementById("music-provider");
   const loopInterval = document.getElementById("loop-interval");
+  const scheduleEnabled = document.getElementById("schedule-enabled");
+  const scheduleStart = document.getElementById("schedule-start");
+  const scheduleEnd = document.getElementById("schedule-end");
   const rawConfig = document.getElementById("raw-config");
   const configToast = document.getElementById("config-toast");
 
-  llmProvider.value = config.llm?.provider || "ollama";
-  llmModel.value = config.llm?.[llmProvider.value]?.model || "";
-  musicProvider.value = config.music?.provider || "local";
-  loopInterval.value = config.agent?.loop_interval_seconds ?? 300;
+  function applyToFields(cfg) {
+    llmProvider.value = cfg.llm?.provider || "ollama";
+    llmModel.value = cfg.llm?.[llmProvider.value]?.model || "";
+    musicProvider.value = cfg.music?.provider || "local";
+    loopInterval.value = cfg.agent?.loop_interval_seconds ?? 300;
+    scheduleEnabled.checked = !!cfg.schedule?.enabled;
+    scheduleStart.value = cfg.schedule?.start_time ?? "06:00";
+    scheduleEnd.value = cfg.schedule?.end_time ?? "23:00";
+  }
+
+  applyToFields(config);
   rawConfig.value = JSON.stringify(config, null, 2);
 
   document.getElementById("save-config").addEventListener("click", async () => {
@@ -61,6 +71,10 @@ async function initConfigPage() {
       updated.music.provider = musicProvider.value;
       updated.agent = updated.agent || {};
       updated.agent.loop_interval_seconds = parseInt(loopInterval.value, 10);
+      updated.schedule = updated.schedule || {};
+      updated.schedule.enabled = scheduleEnabled.checked;
+      updated.schedule.start_time = scheduleStart.value || "06:00";
+      updated.schedule.end_time = scheduleEnd.value || "23:00";
 
       await api("/api/config", {
         method: "PUT",
@@ -76,11 +90,7 @@ async function initConfigPage() {
 
   document.getElementById("sync-raw").addEventListener("click", () => {
     try {
-      const updated = JSON.parse(rawConfig.value);
-      llmProvider.value = updated.llm?.provider || "ollama";
-      llmModel.value = updated.llm?.[llmProvider.value]?.model || "";
-      musicProvider.value = updated.music?.provider || "local";
-      loopInterval.value = updated.agent?.loop_interval_seconds ?? 300;
+      applyToFields(JSON.parse(rawConfig.value));
     } catch (e) {
       showToast(configToast, "Ungültiges JSON: " + e.message, true);
     }
@@ -162,9 +172,13 @@ async function initStatusPanel() {
   if (!el) return;
 
   async function refresh() {
-    const { state, player_current_segment_index } = await api("/api/status");
+    const { state, player_current_segment_index, on_air } = await api("/api/status");
+    const onAirBadge = on_air
+      ? '<span style="color:#4caf7d;">● On Air</span>'
+      : '<span style="color:#ff5b7f;">● Außerhalb der Sendezeit</span>';
+
     if (!state) {
-      el.innerHTML = '<p class="status-line">Noch kein Durchlauf.</p>';
+      el.innerHTML = `<p class="status-line">${onAirBadge}</p><p class="status-line">Noch kein Durchlauf.</p>`;
       return;
     }
     const segments = state.script?.segments || [];
@@ -177,6 +191,7 @@ async function initStatusPanel() {
         </div>`)
       .join("");
     el.innerHTML = `
+      <p class="status-line">${onAirBadge}</p>
       <p class="status-line">Letzter Durchlauf: ${new Date(state.last_run).toLocaleString("de-DE")}</p>
       <p class="status-line">Verarbeitete Wünsche: ${state.inbox_items_processed}</p>
       ${state.final_message ? `<p>${state.final_message}</p>` : ""}

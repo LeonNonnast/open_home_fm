@@ -58,6 +58,28 @@
         </div>
       </div>
 
+      <div class="field">
+        <label class="switch" style="vertical-align:middle;">
+          <input type="checkbox" id="schedule-enabled">
+          <span class="slider"></span>
+        </label>
+        <span style="margin-left:0.6rem; vertical-align:middle;">Sendezeitfenster einschränken</span>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="schedule-start">Sendebeginn</label>
+          <input id="schedule-start" type="time">
+        </div>
+        <div class="field">
+          <label for="schedule-end">Sendeende</label>
+          <input id="schedule-end" type="time">
+        </div>
+      </div>
+      <p class="status-line" style="margin-top:-0.5rem;">
+        Außerhalb dieses Fensters pausiert der Agent-Loop und die Wiedergabe. Wenn deaktiviert,
+        sendet die Station rund um die Uhr.
+      </p>
+
       <details>
         <summary style="cursor:pointer; color: var(--muted); margin-bottom: 0.75rem;">Erweitert (vollständige config.yaml als JSON)</summary>
         <div class="field">

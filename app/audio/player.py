@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from app.agent.script import Script, load_script
+from app.config import is_broadcast_time, load_config
 from app.music.base import MusicProvider, Track
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,8 @@ class ScriptPlayer:
     def _run_forever(self) -> None:
         while not self._stop_event.is_set():
             script = load_script(self.script_path)
-            if script is not None and script.id != self._last_script_id:
+            is_new_script = script is not None and script.id != self._last_script_id
+            if is_new_script and is_broadcast_time(load_config()):
                 self._last_script_id = script.id
                 self._play_script(script)
             else:
@@ -60,6 +62,9 @@ class ScriptPlayer:
         for index, segment in enumerate(script.segments):
             if self._stop_event.is_set():
                 return
+            if not is_broadcast_time(load_config()):
+                logger.info("Broadcast window closed, stopping script %s early", script.id)
+                break
             self.current_segment_index = index
             try:
                 if segment.type == "track":

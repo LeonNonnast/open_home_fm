@@ -4,7 +4,7 @@ import json
 
 from fastapi import APIRouter, BackgroundTasks, Request
 
-from app.config import resolve_path
+from app.config import is_broadcast_time, load_config, resolve_path
 
 router = APIRouter(prefix="/api/status", tags=["status"])
 
@@ -17,6 +17,7 @@ def get_status(request: Request) -> dict:
     return {
         "state": state,
         "player_current_segment_index": player.current_segment_index if player else None,
+        "on_air": is_broadcast_time(load_config()),
     }
 
 

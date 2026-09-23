@@ -125,9 +125,20 @@ class AgentLoop:
                 logger.exception("Could not read inbox file %s", path)
         return items
 
-    @staticmethod
-    def _build_user_message(inbox_items: list[tuple[Path, str]]) -> str:
-        now = datetime.now().strftime("%A, %H:%M")
+    #  datetime.strftime("%A") depends on the system locale, which usually isn't set to German
+    #  on a fresh Raspberry Pi OS - spelling this out explicitly keeps the weekday name German
+    #  regardless of locale.
+    _GERMAN_WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+    @classmethod
+    def _now_description(cls) -> str:
+        now = datetime.now()
+        weekday = cls._GERMAN_WEEKDAYS[now.weekday()]
+        return f"{weekday}, {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} Uhr"
+
+    @classmethod
+    def _build_user_message(cls, inbox_items: list[tuple[Path, str]]) -> str:
+        now = cls._now_description()
         if not inbox_items:
             return (
                 f"Aktuelle Zeit: {now}. Es liegen keine neuen Hörerwünsche vor. "
