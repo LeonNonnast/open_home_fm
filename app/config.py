@@ -36,6 +36,11 @@ def save_config(config: dict[str, Any]) -> None:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
 
+def load_plugin_settings(plugin: str) -> dict[str, Any]:
+    """Settings a plugin's install() stored under plugins.settings.<plugin folder> (re-read each call)."""
+    return (load_config().get("plugins", {}).get("settings", {}) or {}).get(plugin, {}) or {}
+
+
 def load_system_prompt() -> str:
     with _lock:
         return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")

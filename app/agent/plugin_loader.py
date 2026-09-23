@@ -26,6 +26,9 @@ fed back to the LLM as the tool result.
 call it, the agent loop calls `execute(**context_args)` once at the start of every iteration and
 injects the result directly into the input, so the information is available without a tool call.
 It remains callable as a normal tool too (e.g. to ask about a different city than the default).
+
+Optionally `plugin.py` also defines `install(setup) -> dict`, an interactive setup step the
+installer runs (see app/agent/plugin_setup.py) - the loader itself ignores it.
 """
 from __future__ import annotations
 

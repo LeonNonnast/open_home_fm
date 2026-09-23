@@ -142,6 +142,17 @@ fi
 .venv/bin/pip install -q -e .
 note "Python-Abhängigkeiten installiert."
 
+cfg_get() {
+  # cfg_get <dotted.key> <default> -> current value from config/config.yaml (defaults on re-runs)
+  .venv/bin/python3 -c '
+import sys, yaml
+value = yaml.safe_load(open("config/config.yaml", encoding="utf-8"))
+for key in sys.argv[1].split("."):
+    value = value.get(key) if isinstance(value, dict) else None
+print(value if value not in (None, "") else sys.argv[2])
+' "$1" "$2"
+}
+
 # ---------------------------------------------------------------------------
 # 3. .env
 # ---------------------------------------------------------------------------
@@ -228,15 +239,90 @@ else
 fi
 
 echo ""
-info "Sprachausgabe (TTS)"
-TTS_CHOICE="$(ask "Piper-Binary im PATH verfügbar? (n = TTS vorerst deaktivieren)" "y")"
-if [[ "$TTS_CHOICE" =~ ^[yY] ]]; then
+info "Sprachausgabe (TTS / Stimme)"
+# German Piper voices from https://huggingface.co/rhasspy/piper-voices - id|description.
+PIPER_VOICES=(
+  "de_DE-thorsten-medium|Thorsten, männlich, ausgewogen (Standard)"
+  "de_DE-thorsten-high|Thorsten, männlich, beste Qualität - auf dem Pi spürbar langsamer"
+  "de_DE-thorsten_emotional-medium|Thorsten, männlich, ausdrucksstärker"
+  "de_DE-kerstin-low|Kerstin, weiblich"
+  "de_DE-ramona-low|Ramona, weiblich"
+  "de_DE-eva_k-x_low|Eva, weiblich, sehr schnell, einfache Qualität"
+  "de_DE-karlsson-low|Karlsson, männlich"
+  "de_DE-pavoque-low|Pavoque, männlich"
+)
+PIPER_VOICES_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main"
+
+download_piper_voice() {
+  # download_piper_voice <voice id> -> models/tts/<id>.onnx + .onnx.json (skips existing files)
+  local id="$1" lang speaker quality path ext
+  lang="${id%%-*}"; speaker="${id#*-}"; quality="${speaker##*-}"; speaker="${speaker%-*}"
+  path="${lang%%_*}/$lang/$speaker/$quality/$id.onnx"
+  mkdir -p models/tts
+  for ext in "" ".json"; do
+    if [ ! -s "models/tts/$id.onnx$ext" ]; then
+      note "Lade $id.onnx$ext ..."
+      if ! curl -fL --progress-bar -o "models/tts/$id.onnx$ext.part" "$PIPER_VOICES_URL/$path$ext"; then
+        rm -f "models/tts/$id.onnx$ext.part"
+        return 1
+      fi
+      mv "models/tts/$id.onnx$ext.part" "models/tts/$id.onnx$ext"
+    fi
+  done
+}
+
+PIPER_BINARY="$(cfg_get tts.piper.binary piper)"
+PIPER_VOICE_MODEL="$(cfg_get tts.piper.voice_model models/tts/de_DE-thorsten-medium.onnx)"
+if [ "$(ask_yes_no "Sprachansagen aktivieren (Piper, lokal)?" y)" = "true" ]; then
   TTS_ENGINE="piper"
-  PIPER_VOICE_MODEL="$(ask "Pfad zum Piper-Stimmmodell (.onnx)" "${PIPER_VOICE_MODEL:-models/tts/de_DE-thorsten-medium.onnx}")"
-  if [ ! -f "$PIPER_VOICE_MODEL" ]; then
-    note "Hinweis: $PIPER_VOICE_MODEL existiert noch nicht - Modell von"
-    note "https://github.com/rhasspy/piper/releases herunterladen und dort ablegen."
+  if ! command -v "$PIPER_BINARY" >/dev/null 2>&1; then
+    if [ "$(ask_yes_no "Piper nicht gefunden - in die Python-Umgebung installieren (pip install piper-tts)?" y)" = "true" ]; then
+      .venv/bin/pip install -q piper-tts
+      PIPER_BINARY="$ROOT_DIR/.venv/bin/piper"
+      note "Piper installiert: $PIPER_BINARY"
+    fi
   fi
+
+  VOICE_DEFAULT="$(( ${#PIPER_VOICES[@]} + 1 ))"
+  for i in "${!PIPER_VOICES[@]}"; do
+    if [ "models/tts/${PIPER_VOICES[$i]%%|*}.onnx" = "$PIPER_VOICE_MODEL" ]; then
+      VOICE_DEFAULT="$((i + 1))"
+    fi
+  done
+  [ -f "$PIPER_VOICE_MODEL" ] || [ "$VOICE_DEFAULT" -le "${#PIPER_VOICES[@]}" ] || VOICE_DEFAULT=1
+  # Pick -> download -> optional sample; "no" after the sample goes back to the list.
+  while true; do
+    for i in "${!PIPER_VOICES[@]}"; do
+      echo "  $((i + 1))) ${PIPER_VOICES[$i]#*|}"
+    done
+    echo "  $(( ${#PIPER_VOICES[@]} + 1 ))) Eigenes Modell (Pfad zu einer .onnx-Datei)"
+    VOICE_CHOICE="$(ask "Stimme" "$VOICE_DEFAULT")"
+    if [[ "$VOICE_CHOICE" =~ ^[0-9]+$ ]] && [ "$VOICE_CHOICE" -ge 1 ] && [ "$VOICE_CHOICE" -le "${#PIPER_VOICES[@]}" ]; then
+      VOICE_ID="${PIPER_VOICES[$((VOICE_CHOICE - 1))]%%|*}"
+      if ! download_piper_voice "$VOICE_ID"; then
+        note "Download fehlgeschlagen - Internetverbindung prüfen oder andere Stimme wählen."
+        continue
+      fi
+      PIPER_VOICE_MODEL="models/tts/$VOICE_ID.onnx"
+    else
+      PIPER_VOICE_MODEL="$(ask "Pfad zum Piper-Stimmmodell (.onnx, daneben die .onnx.json)" "$PIPER_VOICE_MODEL")"
+    fi
+    VOICE_DEFAULT="$VOICE_CHOICE"
+
+    if command -v "$PIPER_BINARY" >/dev/null 2>&1 && [ -f "$PIPER_VOICE_MODEL" ] \
+       && [ "$(ask_yes_no "Hörprobe abspielen?" y)" = "true" ]; then
+      SAMPLE_WAV="$(mktemp --suffix=.wav)"
+      if echo "Hallo und herzlich willkommen bei open home fm. Gleich gibt es das Wetter, danach mehr Musik." \
+         | "$PIPER_BINARY" --model "$PIPER_VOICE_MODEL" --output_file "$SAMPLE_WAV" >/dev/null 2>&1; then
+        ffplay -nodisp -autoexit -loglevel quiet "$SAMPLE_WAV" || true
+      else
+        note "Hörprobe konnte nicht erzeugt werden."
+      fi
+      rm -f "$SAMPLE_WAV"
+      [ "$(ask_yes_no "Diese Stimme verwenden?" y)" = "true" ] || continue
+    fi
+    break
+  done
 else
   TTS_ENGINE="none"
 fi
@@ -253,6 +339,9 @@ LOOP_INTERVAL="$(ask "Intervall zwischen Durchläufen in Sekunden" "${LOOP_INTER
 # 4. Write .env
 # ---------------------------------------------------------------------------
 info "Schreibe $ENV_FILE"
+# Keys not managed here (e.g. plugin secrets like HUE_APP_KEY) are carried over unchanged.
+CORE_ENV_KEYS="OLLAMA_API_KEY|ANTHROPIC_API_KEY|SPOTIFY_CLIENT_ID|SPOTIFY_CLIENT_SECRET|SPOTIFY_REDIRECT_URI|WEATHER_API_KEY"
+EXTRA_ENV="$(grep -vE "^($CORE_ENV_KEYS)=" "$ENV_FILE" 2>/dev/null || true)"
 cat > "$ENV_FILE" <<EOF
 OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
@@ -261,6 +350,9 @@ SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
 SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8888/callback}
 WEATHER_API_KEY=
 EOF
+if [ -n "$EXTRA_ENV" ]; then
+  echo "$EXTRA_ENV" >> "$ENV_FILE"
+fi
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
@@ -269,7 +361,7 @@ chmod 600 "$ENV_FILE"
 info "Schreibe config/config.yaml"
 .venv/bin/python3 - "$LLM_PROVIDER" "${OLLAMA_MODEL:-}" "${OLLAMA_HOST:-}" "${ANTHROPIC_MODEL:-claude-sonnet-5}" \
   "$MUSIC_PROVIDER" "${SPOTIFY_DEVICE_NAME:-open-home-fm}" "${LIBRARY_PATH:-data/library}" \
-  "$AUDIO_OUTPUT_DEVICE" "$TTS_ENGINE" "${PIPER_VOICE_MODEL:-models/tts/de_DE-thorsten-medium.onnx}" \
+  "$AUDIO_OUTPUT_DEVICE" "$TTS_ENGINE" "$PIPER_BINARY" "$PIPER_VOICE_MODEL" \
   "$LOOP_INTERVAL" <<'PYEOF'
 import sys
 import yaml
@@ -277,7 +369,7 @@ from pathlib import Path
 
 (llm_provider, ollama_model, ollama_host, anthropic_model,
  music_provider, spotify_device, library_path,
- audio_output, tts_engine, piper_voice_model, loop_interval) = sys.argv[1:]
+ audio_output, tts_engine, piper_binary, piper_voice_model, loop_interval) = sys.argv[1:]
 
 config_path = Path("config/config.yaml")
 config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -294,6 +386,7 @@ config["music"]["local"]["library_path"] = library_path
 config["audio"]["output_device"] = audio_output
 
 config["tts"]["engine"] = tts_engine
+config["tts"]["piper"]["binary"] = piper_binary
 config["tts"]["piper"]["voice_model"] = piper_voice_model
 
 config["agent"]["loop_interval_seconds"] = int(loop_interval)
@@ -303,7 +396,17 @@ print("config/config.yaml aktualisiert.")
 PYEOF
 
 # ---------------------------------------------------------------------------
-# 6. Feature-specific checks
+# 6. Plugins
+# ---------------------------------------------------------------------------
+# Each plugin under ./plugins is offered for activation; plugins with an install() step (weather
+# location, Hue bridge pairing, ...) ask their own questions. Re-run for single plugins later
+# with .venv/bin/python scripts/setup_plugins.py <plugin>.
+echo ""
+info "Plugins"
+.venv/bin/python scripts/setup_plugins.py
+
+# ---------------------------------------------------------------------------
+# 7. Feature-specific checks
 # ---------------------------------------------------------------------------
 # Things only needed for the chosen options. Not fatal - the config is written either way - but
 # listed explicitly, since e.g. a missing raspotify only shows up later as "no device in the app".
@@ -321,11 +424,11 @@ if [ "$MUSIC_PROVIDER" = "spotify" ]; then
   fi
 fi
 if [ "$TTS_ENGINE" = "piper" ]; then
-  if ! command -v piper >/dev/null 2>&1; then
-    OPEN_ITEMS+=("piper nicht im PATH: Binary von https://github.com/rhasspy/piper/releases installieren")
+  if ! command -v "$PIPER_BINARY" >/dev/null 2>&1; then
+    OPEN_ITEMS+=("piper nicht gefunden ($PIPER_BINARY): ./install.sh erneut ausführen und Piper installieren lassen")
   fi
   if [ ! -f "$PIPER_VOICE_MODEL" ] || [ ! -f "$PIPER_VOICE_MODEL.json" ]; then
-    OPEN_ITEMS+=("Piper-Stimmmodell fehlt: $PIPER_VOICE_MODEL + .onnx.json von https://github.com/rhasspy/piper/releases ablegen")
+    OPEN_ITEMS+=("Piper-Stimmmodell fehlt: $PIPER_VOICE_MODEL + .onnx.json - ./install.sh erneut ausführen und Stimme wählen")
   fi
 fi
 
@@ -343,3 +446,4 @@ note "Web-UI dann unter http://<host>:8000/"
 if [ "$MUSIC_PROVIDER" = "spotify" ]; then
   note "Spotify-Login erneuern (z.B. anderer Account): .venv/bin/python scripts/spotify_login.py --force"
 fi
+note "Plugins neu einrichten: .venv/bin/python scripts/setup_plugins.py [plugin ...]"

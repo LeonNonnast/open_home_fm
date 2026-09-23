@@ -1,0 +1,25 @@
+name: control_hue_lights
+description: >-
+  Steuert die Philips-Hue-Lampen im Raum (z.B. passende Stimmung zur Musik oder Tageszeit).
+  action "status" listet Räume/Lampen mit ihrem Zustand, "on"/"off" schaltet, beim Einschalten
+  optional mit Helligkeit und Farbe.
+parameters:
+  type: object
+  properties:
+    action:
+      type: string
+      enum: [status, "on", "off"]
+      description: status = Zustand abfragen, on = einschalten/ändern, off = ausschalten
+    target:
+      type: string
+      description: Name eines Raums, einer Zone oder einer Lampe. Weglassen = Standard-Raum aus der Einrichtung.
+    brightness:
+      type: integer
+      description: Helligkeit in Prozent (1-100), nur bei action "on"
+    color:
+      type: string
+      description: >-
+        Farbe bei action "on": warmweiß, neutralweiß, kaltweiß, rot, orange, gelb, grün, türkis,
+        blau, lila, pink oder ein Hex-Wert wie "#ff8800"
+  required: [action]
+enabled: true

@@ -60,4 +60,7 @@ stt:
 
 plugins:
   # Plugin folders under ./plugins are auto-discovered; individually disable here by name.
-  disabled: []
+  # Hue is off until set up (scripts/setup_plugins.py hue pairs the bridge).
+  disabled: [control_hue_lights]
+  # Per-plugin settings written by the plugins' install() step (scripts/setup_plugins.py).
+  settings: {}

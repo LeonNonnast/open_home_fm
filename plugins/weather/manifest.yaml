@@ -1,15 +1,13 @@
 name: get_weather
-description: Liefert das aktuelle Wetter für einen Ort (Open-Meteo, kein API-Key nötig).
+description: Liefert das aktuelle Wetter (Open-Meteo, kein API-Key nötig). Ohne Ort = Standort des Senders.
 parameters:
   type: object
   properties:
     location:
       type: string
-      description: Ortsname, z.B. "Berlin"
-  required: [location]
+      description: Ortsname, z.B. "Berlin". Weglassen für den Standort des Senders.
+  required: []
 enabled: true
-# Runs automatically each loop with context_args below, result goes straight into the agent's
-# input - no tool call needed. Still callable on demand for a different location.
+# Runs automatically each loop (for the location chosen in the installer), result goes straight
+# into the agent's input - no tool call needed. Still callable on demand for a different location.
 context: true
-context_args:
-  location: "Berlin"
