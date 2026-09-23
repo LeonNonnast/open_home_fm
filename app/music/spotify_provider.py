@@ -11,13 +11,43 @@ import logging
 import time
 
 import spotipy
+from spotipy.exceptions import SpotifyOauthError
 from spotipy.oauth2 import SpotifyOAuth
 
+from app.config import ROOT_DIR
 from app.music.base import Device, MusicProvider, Playlist, Track
 
 logger = logging.getLogger(__name__)
 
 SCOPE = "user-read-playback-state user-modify-playback-state playlist-read-private"
+TOKEN_CACHE_PATH = ROOT_DIR / ".spotify_token_cache"
+LOGIN_HINT = "Run `.venv/bin/python scripts/spotify_login.py` once to log in to Spotify."
+
+
+class NonInteractiveSpotifyOAuth(SpotifyOAuth):
+    """SpotifyOAuth that fails fast instead of starting an interactive login.
+
+    Plain SpotifyOAuth starts a browser/local-server login whenever no cached token exists,
+    which blocks forever on a headless Pi running as a service. The login is done once,
+    interactively, via scripts/spotify_login.py; afterwards the cached refresh token is enough.
+    """
+
+    def get_auth_response(self, open_browser=None):
+        raise SpotifyOauthError(f"No Spotify login stored. {LOGIN_HINT}")
+
+
+def create_spotify_oauth(
+    client_id: str, client_secret: str, redirect_uri: str, interactive: bool = False
+) -> SpotifyOAuth:
+    oauth_cls = SpotifyOAuth if interactive else NonInteractiveSpotifyOAuth
+    return oauth_cls(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        scope=SCOPE,
+        cache_path=str(TOKEN_CACHE_PATH),
+        open_browser=False,
+    )
 
 
 class SpotifyMusicProvider(MusicProvider):
@@ -25,15 +55,10 @@ class SpotifyMusicProvider(MusicProvider):
 
     def __init__(self, client_id: str, client_secret: str, redirect_uri: str, device_name: str):
         self.device_name = device_name
-        self.sp = spotipy.Spotify(
-            auth_manager=SpotifyOAuth(
-                client_id=client_id,
-                client_secret=client_secret,
-                redirect_uri=redirect_uri,
-                scope=SCOPE,
-                cache_path=".spotify_token_cache",
-            )
-        )
+        auth_manager = create_spotify_oauth(client_id, client_secret, redirect_uri)
+        if auth_manager.cache_handler.get_cached_token() is None:
+            logger.error("No Spotify login stored - Spotify calls will fail. %s", LOGIN_HINT)
+        self.sp = spotipy.Spotify(auth_manager=auth_manager)
 
     def _resolve_device_id(self, device: Device | None) -> str | None:
         if device is not None:

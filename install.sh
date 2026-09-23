@@ -53,10 +53,14 @@ ask() {
 }
 
 ask_secret() {
-  local prompt="$1" answer
+  # ask_secret <prompt> <existing value> -> echoes the answer; empty input keeps the existing value
+  local prompt="$1" existing="${2:-}" answer
+  if [ -n "$existing" ]; then
+    prompt="$prompt [Enter = bisherigen Wert behalten]"
+  fi
   read -r -s -p "$prompt: " answer || true
-  echo
-  echo "$answer"
+  echo >&2  # newline after the hidden input - to stderr, so it's not captured as part of the value
+  echo "${answer:-$existing}"
 }
 
 ask_yes_no() {
@@ -118,13 +122,13 @@ LLM_CHOICE="$(ask "Auswahl" "1")"
 if [ "$LLM_CHOICE" = "2" ]; then
   LLM_PROVIDER="anthropic"
   ANTHROPIC_MODEL="$(ask "Anthropic-Modell" "${ANTHROPIC_MODEL:-claude-sonnet-5}")"
-  ANTHROPIC_API_KEY="$(ask_secret "Anthropic API-Key")"
+  ANTHROPIC_API_KEY="$(ask_secret "Anthropic API-Key" "${ANTHROPIC_API_KEY:-}")"
 else
   LLM_PROVIDER="ollama"
   OLLAMA_HOST="$(ask "Ollama-Host (leer = lokaler Daemon, sonst z.B. https://ollama.com)" "${OLLAMA_HOST:-https://ollama.com}")"
   OLLAMA_MODEL="$(ask "Ollama-Modell" "${OLLAMA_MODEL:-gpt-oss:120b-cloud}")"
   if [[ "$OLLAMA_HOST" == *"ollama.com"* ]]; then
-    OLLAMA_API_KEY="$(ask_secret "Ollama Cloud API-Key")"
+    OLLAMA_API_KEY="$(ask_secret "Ollama Cloud API-Key" "${OLLAMA_API_KEY:-}")"
   else
     OLLAMA_API_KEY="${OLLAMA_API_KEY:-}"
   fi
@@ -138,9 +142,29 @@ MUSIC_CHOICE="$(ask "Auswahl" "1")"
 
 if [ "$MUSIC_CHOICE" = "2" ]; then
   MUSIC_PROVIDER="spotify"
-  SPOTIFY_CLIENT_ID="$(ask "Spotify Client-ID" "${SPOTIFY_CLIENT_ID:-}")"
-  SPOTIFY_CLIENT_SECRET="$(ask_secret "Spotify Client-Secret")"
-  SPOTIFY_REDIRECT_URI="$(ask "Spotify Redirect-URI" "${SPOTIFY_REDIRECT_URI:-http://localhost:8000/api/music/spotify/callback}")"
+  note "Spotify-App unter https://developer.spotify.com/dashboard anlegen und dort als"
+  note "Redirect-URI eintragen: http://127.0.0.1:8888/callback"
+  # Credentials + one-time login in a loop: a failed login (wrong ID/secret, redirect URI
+  # mismatch, ...) goes straight back to re-entering the credentials.
+  while true; do
+    SPOTIFY_CLIENT_ID="$(ask "Spotify Client-ID" "${SPOTIFY_CLIENT_ID:-}")"
+    SPOTIFY_CLIENT_SECRET="$(ask_secret "Spotify Client-Secret" "${SPOTIFY_CLIENT_SECRET:-}")"
+    SPOTIFY_REDIRECT_URI="$(ask "Spotify Redirect-URI" "${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8888/callback}")"
+    if [ -z "$SPOTIFY_CLIENT_ID" ] || [ -z "$SPOTIFY_CLIENT_SECRET" ]; then
+      note "Client-ID und Client-Secret dürfen nicht leer sein."
+      continue
+    fi
+    if SPOTIFY_CLIENT_ID="$SPOTIFY_CLIENT_ID" SPOTIFY_CLIENT_SECRET="$SPOTIFY_CLIENT_SECRET" \
+       SPOTIFY_REDIRECT_URI="$SPOTIFY_REDIRECT_URI" .venv/bin/python scripts/spotify_login.py; then
+      break
+    fi
+    echo ""
+    if [ "$(ask_yes_no "Zugangsdaten neu eingeben und erneut versuchen? (n = Login später nachholen)" y)" = "false" ]; then
+      note "Login später nachholen mit: .venv/bin/python scripts/spotify_login.py"
+      note "Bis dahin schlagen alle Spotify-Aufrufe fehl."
+      break
+    fi
+  done
   SPOTIFY_DEVICE_NAME="$(ask "Name des raspotify Connect-Geräts" "${SPOTIFY_DEVICE_NAME:-open-home-fm}")"
   note "Vergiss nicht, raspotify auf diesem Gerät zu installieren (siehe README)."
 else
@@ -180,7 +204,7 @@ OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
 SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
-SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI:-http://localhost:8000/api/music/spotify/callback}
+SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8888/callback}
 WEATHER_API_KEY=
 EOF
 chmod 600 "$ENV_FILE"
@@ -229,5 +253,5 @@ info "Fertig!"
 note "Start: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
 note "Web-UI dann unter http://<host>:8000/"
 if [ "$MUSIC_PROVIDER" = "spotify" ]; then
-  note "Beim ersten Start öffnet spotipy einen OAuth-Flow im Terminal/Browser."
+  note "Spotify-Login erneuern (z.B. anderer Account): .venv/bin/python scripts/spotify_login.py --force"
 fi

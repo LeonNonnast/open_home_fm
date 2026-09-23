@@ -101,9 +101,11 @@ eingetragenen Werte als Default vor.
 4. **Musikquelle wählen** (`config/config.yaml` → `music.provider`):
    - `local`: Audiodateien nach `data/library/<Playlist-Ordner>/*.mp3` legen.
    - `spotify`: [raspotify](https://github.com/dtcooper/raspotify) installieren (macht den Pi zu
-     einem Spotify-Connect-Gerät), Spotify-App unter developer.spotify.com anlegen, Zugangsdaten
-     in `.env` eintragen. Erstmaliger Start öffnet einen OAuth-Flow (Spotify Premium nötig für
-     Playback-Steuerung über die Web API).
+     einem Spotify-Connect-Gerät), Spotify-App unter developer.spotify.com anlegen (Redirect-URI:
+     `http://127.0.0.1:8888/callback`), Zugangsdaten in `.env` eintragen und einmalig
+     `.venv/bin/python scripts/spotify_login.py` ausführen (funktioniert auch headless: Link auf
+     PC/Handy öffnen, weitergeleitete URL zurück ins Terminal kopieren). Der Installer erledigt
+     das automatisch. Spotify Premium nötig für Playback-Steuerung über die Web API.
 5. **TTS (Piper, lokal)**: Piper-Binary installieren und ein Stimmmodell (`.onnx` + `.onnx.json`)
    von den [Piper-Releases](https://github.com/rhasspy/piper/releases) nach
    `models/tts/` legen, Pfad in `config.yaml` (`tts.piper.voice_model`) eintragen.

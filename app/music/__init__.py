@@ -18,7 +18,7 @@ def create_music_provider(config: dict) -> MusicProvider:
             client_id=os.environ["SPOTIFY_CLIENT_ID"],
             client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
             redirect_uri=os.environ.get(
-                "SPOTIFY_REDIRECT_URI", "http://localhost:8000/api/music/spotify/callback"
+                "SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback"
             ),
             device_name=spotify_cfg.get("device_name", "open-home-fm"),
         )
