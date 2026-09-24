@@ -59,10 +59,16 @@ Zwischenrufe     ┘                          │     Füllstand-Watcher 30 s, H
   Schlagzeilen, Wetter mit Vorhersage, alle gültigen Hinweise) und :30 kurz (ca. 30-60 s,
   nur neue Hinweise). Quellen (`sources`): News-Plugin, Wetter-Plugin, Meldungs-Postfach. Die
   Ausgabe (`schedule_news`) ist ein Beitrag der Spur `news` mit `not_before` = Slot: sie läuft
-  nach dem Song, der zum Slot läuft, und verfällt nach `max_delay_minutes` (15). Hinweise aus
-  dem Postfach werden in den ausführlichen Ausgaben bis `valid_until` wiederholt; lief ihre
-  Ausgabe nicht, kommen sie zurück ins Postfach. `placement: on_time` wirkt erst mit dem
-  Unterbrechen (bis dahin wie `after_song`).
+  nach dem Song, der zum Slot läuft, und verfällt nach `max_delay_minutes` (15, höchstens bis
+  zum nächsten Slot; muss kleiner sein als der kürzeste Slot-Abstand). Hinweise aus dem
+  Postfach werden in den ausführlichen Ausgaben bis `valid_until` wiederholt - höchstens 3 je
+  Ausgabe (die bald ablaufenden) und jeder höchstens alle `note_repeat_hours` (3); lief ihre
+  Ausgabe nicht, kommen sie zurück ins Postfach. Eine in der Sendung entfernte Ausgabe fällt
+  aus (ihre Hinweise kommen in die nächste); liefert keine Quelle Inhalt und gibt es keine
+  Hinweise, fragt die Redaktion das Modell gar nicht erst („keine Nachrichten verfügbar“,
+  nichts eingeplant). Geänderte Slots oder eine ausgeschaltete Redaktion verwerfen schon
+  eingeplante Ausgaben dieser Slots. `placement: on_time` wirkt erst mit dem Unterbrechen
+  (bis dahin wie `after_song`).
 - **Füllprogramm**: Ist kein Programm da, spielt der Player die **Reserve** (`data/reserve.json`,
   15-20 Songs, bei jedem Lauf von der Musikredaktion gepflegt), danach zufällige Songs aus den
   **Lieblings-Playlists** (`music.favorite_playlists`, Playlist-IDs bzw. Ordnernamen der

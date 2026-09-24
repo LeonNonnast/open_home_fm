@@ -10,11 +10,14 @@ from app.config import load_plugin_settings
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 FALLBACK_LOCATION = "Berlin"
+UNAVAILABLE = "Wetter derzeit nicht verfügbar."
 
 
 def _geocode(client: httpx.Client, name: str, count: int = 1) -> list[dict]:
-    geo = client.get(GEOCODE_URL, params={"name": name, "count": count, "language": "de"}).json()
-    return geo.get("results") or []
+    response = client.get(GEOCODE_URL, params={"name": name, "count": count, "language": "de"})
+    response.raise_for_status()
+    geo = response.json()
+    return (geo.get("results") or []) if isinstance(geo, dict) else []
 
 
 def _label(place: dict) -> str:
@@ -50,6 +53,14 @@ def _forecast_lines(daily: dict) -> list[str]:
 
 
 def execute(location: str | None = None, forecast: bool = False) -> str:
+    """API errors, rate limits and odd answers give UNAVAILABLE instead of "None°C"."""
+    try:
+        return _execute(location, forecast)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return UNAVAILABLE
+
+
+def _execute(location: str | None, forecast: bool) -> str:
     forecast = forecast is True or str(forecast).strip().lower() in ("true", "1", "ja", "yes")
     home = load_plugin_settings("weather")
     with httpx.Client(timeout=10) as client:
@@ -70,14 +81,16 @@ def execute(location: str | None = None, forecast: bool = False) -> str:
         if forecast:
             params.update(daily="weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
                           timezone="auto", forecast_days=2)
-        weather = client.get(WEATHER_URL, params=params).json()
-        current = weather.get("current_weather", {})
+        response = client.get(WEATHER_URL, params=params)
+        response.raise_for_status()
+        weather = response.json()
+        current = weather.get("current_weather") if isinstance(weather, dict) else None
+        if not isinstance(current, dict) or current.get("temperature") is None:
+            return UNAVAILABLE
 
     now_words = WEATHER_WORDS.get(current.get("weathercode"))
-    text = (
-        f"Aktuelles Wetter in {place['name']}: {current.get('temperature')}°C{', ' + now_words if now_words else ''}, "
-        f"Wind {current.get('windspeed')} km/h."
-    )
+    wind = f", Wind {current['windspeed']} km/h" if current.get("windspeed") is not None else ""
+    text = f"Aktuelles Wetter in {place['name']}: {current['temperature']}°C{', ' + now_words if now_words else ''}{wind}."
     if forecast:
         text += "\n" + "\n".join(_forecast_lines(weather.get("daily") or {}))
     return text.strip()

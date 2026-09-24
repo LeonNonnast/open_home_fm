@@ -17,7 +17,7 @@ from app.config import (
     update_config,
 )
 from app.program.filler import load_reserve
-from app.program.news import MAX_SLOTS
+from app.program.news import MAX_SLOTS, drop_unconfigured, min_slot_gap
 
 router = APIRouter(prefix="/api/desks", tags=["desks"])
 
@@ -81,6 +81,7 @@ class NewsSettingsPatch(BaseModel):
     lead_minutes: int = _bounded("lead_minutes")
     placement: Literal["after_song", "on_time"] = None
     max_delay_minutes: int = _bounded("max_delay_minutes")
+    note_repeat_hours: int = _bounded("note_repeat_hours")
     sources: list[Literal["news", "weather", "notes"]] = None
     intro: bool = None
     max_tool_iterations: int = _bounded("max_tool_iterations")
@@ -147,9 +148,23 @@ def patch_desk(name: str, request: Request, body: dict = Body(...)) -> dict:
             detail="„Nachplanen unter“ muss kleiner sein als „Höchstens eingeplant“ (fill_threshold_minutes "
                    "< max_queued_program_minutes).",
         )
+    if name == "news" and ("slots" in values or "max_delay_minutes" in values):
+        gap = min_slot_gap(merged["slots"])
+        if merged["max_delay_minutes"] >= gap:
+            raise HTTPException(
+                status_code=422,
+                detail=f"„Höchstens verspätet“ muss kleiner sein als der kürzeste Abstand zwischen zwei Slots "
+                       f"({gap} min) - sonst laufen zwei Ausgaben direkt hintereinander (max_delay_minutes).",
+            )
     update_config({"desks": {name: values}})
     if name == "news":
         request.app.state.scheduler.plan_news_jobs()
+        if "slots" in values or values.get("enabled") is False:
+            # Bulletins of slots that are gone (or of a switched-off desk) don't air; their notes come back.
+            runner = request.app.state.desk_runner
+            desk = DeskConfig.from_config("news", load_config())
+            if drop_unconfigured(runner.queue, desk.settings, desk.enabled):
+                runner.calls.sync()
     return _desk_view(request, name)
 
 

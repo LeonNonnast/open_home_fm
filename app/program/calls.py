@@ -171,8 +171,9 @@ def reopen_unplayed_wishes(wishes: Mailbox, items: dict[str, QueueItem]) -> list
 
 def follow_news_notes(notes: Mailbox, items: dict[str, QueueItem]) -> list[str]:
     """A news note counts as used once its bulletin is prepared; it stays used when that bulletin
-    aired (`aired_at`). A bulletin that expired or was removed before it aired gives a note that
-    never aired back to the mailbox (if still valid) - the next bulletin reads it again."""
+    aired (`aired_at`, `aired_slot` = the slot it last aired in). A bulletin that expired or was
+    removed before it aired gives a note that never aired back to the mailbox (if still valid) -
+    the next bulletin reads it again; a repeated one keeps `news_slot` = its last aired slot."""
     reopen = []
     for note in notes.all():
         if note["status"] != "used":
@@ -181,10 +182,18 @@ def follow_news_notes(notes: Mailbox, items: dict[str, QueueItem]) -> list[str]:
         if item is None:
             continue
         if item.status == "played" or item.next_segment > 0:
+            fields = {}
             if not note.get("aired_at"):
-                notes.set_fields(note["id"], aired_at=item.updated_at or _now().isoformat())
-        elif item.status in ("expired", "skipped", "removed") and not note.get("aired_at"):
-            reopen.append(note["id"])
+                fields["aired_at"] = item.updated_at or _now().isoformat()
+            if note.get("news_slot") and note.get("aired_slot") != note.get("news_slot"):
+                fields["aired_slot"] = note["news_slot"]
+            if fields:
+                notes.set_fields(note["id"], **fields)
+        elif item.status in ("expired", "skipped", "removed"):
+            if not note.get("aired_at"):
+                reopen.append(note["id"])
+            elif note.get("news_slot") != note.get("aired_slot"):
+                notes.set_fields(note["id"], news_slot=note.get("aired_slot"))
     if reopen:
         notes.reopen(reopen)
         logger.info("News notes back in the mailbox (their bulletin didn't air): %s", ", ".join(reopen))

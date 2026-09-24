@@ -143,3 +143,25 @@ def test_news_desk_patch_validates_and_shows_up_in_status(client):
     assert news["next_slot_at"] == data["next_slot_at"] and news["prepared"] is False
     assert [d["name"] for d in client.get("/api/desks").json()["desks"]] == ["music", "news", "dispatch"]
     assert client.get("/api/desks/news/prompt").json()["text"].startswith("Du bist die Nachrichtenredaktion")
+
+
+def test_news_patch_checks_max_delay_and_drops_bulletins_of_removed_slots(client):
+    from datetime import datetime, timedelta, timezone
+
+    from app.program.queue import QueueItem, Segment
+
+    assert client.patch("/api/desks/news", json={"max_delay_minutes": 30}).status_code == 422  # gap :00/:30
+    assert client.patch("/api/desks/news", json={
+        "slots": [{"minute": "00", "format": "full"}, {"minute": "10", "format": "short"}]}).status_code == 422
+    queue, notes = client.app.state.queue, client.app.state.desk_runner.news_notes
+    slot = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(minute=30, second=0, microsecond=0)
+    item = queue.append(QueueItem.new("news", "news", [Segment("jingle", "N", "/x.wav")], not_before=slot.isoformat()))
+    note = notes.add("Sperrmüll")
+    notes.mark_in_bulletin([note["id"]], item.id, slot.isoformat())
+    kept = queue.append(QueueItem.new("news", "news", [Segment("jingle", "N", "/y.wav")],
+                                      not_before=slot.replace(minute=0).isoformat()))
+    assert client.patch("/api/desks/news", json={"enabled": True, "slots": [{"minute": "00", "format": "full"}]}).status_code == 200
+    assert queue.get(item.id).status == "expired" and queue.get(kept.id).status == "queued"
+    assert notes.get(note["id"])["status"] == "noted"
+    assert client.patch("/api/desks/news", json={"enabled": False}).status_code == 200
+    assert queue.get(kept.id).status == "expired"

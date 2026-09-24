@@ -38,12 +38,16 @@ desks:
     lead_minutes: 5
     # after_song | on_time (on_time needs interrupting, a later version - until then after_song).
     placement: after_song
+    # Capped at the next slot; must be below the smallest gap between two slots.
     max_delay_minutes: 15
     # What a bulletin is made of: news = get_news_headlines, weather = get_weather, notes = the
     # news mailbox (hints from listener calls).
     sources: [news, weather, notes]
     # Put "Die Nachrichten um sieben Uhr." in front of every bulletin.
     intro: true
+    # A full bulletin repeats an aired note (until its valid_until) at most every this many hours,
+    # and at most 3 of them (the soonest expiring); 0 = in every full bulletin.
+    note_repeat_hours: 3
     max_tool_iterations: 8
     # Plugin tools it may call on top of the sources (e.g. weather for another place).
     plugins: []

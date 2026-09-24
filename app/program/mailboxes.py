@@ -146,9 +146,11 @@ class Mailbox:
                 self._save(entries)
         return used
 
-    def mark_in_bulletin(self, entry_ids: list[str], queue_item_id: str, slot: str) -> list[str]:
-        """News notes read in the bulletin `queue_item_id` for `slot`: noted ones and used ones that
-        are still valid (repeated in the full bulletins) become/stay `used`; returns their ids."""
+    def mark_in_bulletin(self, entry_ids: list[str], queue_item_id: str, slot: str,
+                         replacing: set[str] | frozenset = frozenset()) -> list[str]:
+        """News notes read in the bulletin `queue_item_id` for `slot`: noted ones, used ones that
+        are still valid (repeated in the full bulletins) and used ones of a replaced version of the
+        slot (`replacing`: its item ids) become/stay `used`; returns their ids."""
         if not entry_ids:
             return []
         now = _now()
@@ -160,7 +162,8 @@ class Mailbox:
                     continue
                 status = self.effective_status(entry, now)
                 until = parse_time(entry.get("valid_until"))
-                if status == "noted" or (status == "used" and until is not None and until > now):
+                if status == "noted" or (status == "used" and (
+                        (until is not None and until > now) or entry.get("queue_item_id") in replacing)):
                     entry.update(status="used", used_at=entry.get("used_at") or now.isoformat(),
                                  updated_at=now.isoformat(), queue_item_id=queue_item_id, news_slot=slot)
                     used.append(entry["id"])

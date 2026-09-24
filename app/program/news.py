@@ -12,11 +12,22 @@ Slot times are computed from real instants (hour by hour in UTC, then shown in l
 they're DST-safe: in the spring the skipped hour has no bulletins, in the autumn the repeated
 hour has them twice - as a clock on the wall would.
 
-News notes (the mailbox the dispatch desk fills): a full bulletin reads all still valid notes
-(new and already aired ones - "Morgen ist Sperrmüll" is repeated in every full bulletin until
-its `valid_until`), a short one only the new ones (already aired ones are offered as optional,
-"only if it matters again"). A note in a bulletin is `used`; if that bulletin never aired
-(expired, removed) the note goes back to `noted` (app/program/calls.py).
+`expires_at` is capped at the next slot, so a bulletin held back by a long track never airs right
+before (or after) the next one; the settings API also demands max_delay_minutes < the smallest
+gap between two slots.
+
+News notes (the mailbox the dispatch desk fills): a full bulletin reads the new notes first and
+repeats already aired ones until their `valid_until` ("Morgen ist Sperrmüll") - at most
+MAX_REPEATED_NOTES per bulletin (the soonest expiring) and each at most every
+`note_repeat_hours`; the others are offered as optional. A short one reads only the new notes
+(aired ones are optional, "only if it matters again"). A note in a bulletin is `used`; if that
+bulletin never aired (expired, removed) the note goes back to `noted` (app/program/calls.py).
+Re-preparing a slot ("Jetzt vorbereiten") offers the notes of the queued version it replaces as
+new again, and only the notes the new version names stay with the slot.
+
+A bulletin removed in the Sendung view counts as handled: that slot is not prepared again, its
+notes come back and go into the next bulletin. A run that finds no usable content (every source
+failed or empty, no notes to read) queues nothing instead of letting the model make news up.
 """
 from __future__ import annotations
 
@@ -43,6 +54,11 @@ SOURCE_PLUGINS = {"news": "get_news_headlines", "weather": "get_weather"}
 MAX_SLOTS = 12
 # How far ahead the next slot is searched (a narrow broadcast window may skip a night).
 SEARCH_HOURS = 48
+# Aired notes a full bulletin has to repeat at most (the soonest expiring first).
+MAX_REPEATED_NOTES = 3
+# Source results starting like this carry no content (plugin error messages, app/agent/desk.py).
+UNAVAILABLE_MARKERS = ("nicht verfügbar", "news konnten nicht", "keine aktuellen nachrichten", "wetter derzeit nicht",
+                       "kein ort namens", "fehler")
 # Spoken words per minute (Piper, German) - for the length check of a bulletin.
 WORDS_PER_MINUTE = 150
 # (min words, max words) per format: full ~2-3 min, short ~30-60 s.
@@ -125,6 +141,18 @@ def next_slot(config: dict[str, Any], settings: dict[str, Any], now: datetime | 
     return None
 
 
+def slot_configured(settings: dict[str, Any], slot: datetime) -> bool:
+    """Is `slot` (an instant) still one of the configured slots (by its local minute)?"""
+    slots = normalize_slots(settings.get("slots")) or []
+    return slot.astimezone().minute in {int(s["minute"]) for s in slots}
+
+
+def min_slot_gap(slots: list[dict[str, str]]) -> int:
+    """The smallest gap between two consecutive slots in minutes (60 for a single slot)."""
+    minutes = sorted(int(s["minute"]) for s in slots)
+    return min(b - a for a, b in zip(minutes, minutes[1:] + [minutes[0] + 60]))
+
+
 def cron_minutes(settings: dict[str, Any]) -> list[int]:
     """Minutes of the hour at which the desk prepares a slot (slot minute - lead_minutes)."""
     slots = normalize_slots(settings.get("slots")) or []
@@ -162,14 +190,47 @@ def note_is_valid(note: dict[str, Any], now: datetime | None = None) -> bool:
     return status == "used" and until is not None and until > (now or _now())
 
 
-def notes_for(fmt: str, notes: Mailbox, now: datetime | None = None) -> tuple[list[dict], list[dict]]:
-    """(mandatory, optional) notes for a bulletin of format `fmt`, oldest first."""
-    valid = [n for n in notes.all() if note_is_valid(n, now)]
-    new = [n for n in valid if n["status"] == "noted"]
-    aired = [n for n in valid if n["status"] == "used"]
-    if fmt == "full":
-        return new + aired, []
-    return new, aired
+def notes_for(fmt: str, notes: Mailbox, now: datetime | None = None, replacing: Any = (),
+              repeat_hours: float = 0, slot: datetime | None = None) -> tuple[list[dict], list[dict]]:
+    """(mandatory, optional) notes for a bulletin of format `fmt`, new ones first.
+
+    `replacing`: ids of the queued items of this slot a re-preparation replaces - their notes
+    that never aired count as new again. A full bulletin repeats at most MAX_REPEATED_NOTES aired
+    notes (soonest `valid_until` first), each only if its last bulletin (`news_slot`, for a
+    replaced one `aired_slot`) is at least `repeat_hours` before `slot`; the rest is optional."""
+    now = now or _now()
+    replacing = set(replacing or ())
+    new, aired = [], []
+    for note in notes.all():
+        pending = note["status"] == "used" and note.get("queue_item_id") in replacing
+        if note["status"] == "noted" or (pending and not note.get("aired_at")):
+            new.append(note)
+        elif note_is_valid(note, now):
+            aired.append(note)
+    if fmt != "full":
+        return new, aired
+    ref = (slot or now).astimezone(timezone.utc)
+    due, rest = [], []
+    for note in aired:
+        key = "aired_slot" if note.get("queue_item_id") in replacing else "news_slot"
+        last = parse_time(note.get(key))
+        recent = repeat_hours and last is not None and ref - last < timedelta(hours=float(repeat_hours))
+        (rest if recent else due).append(note)
+    due.sort(key=lambda n: parse_time(n.get("valid_until")) or ref)
+    return new + due[:MAX_REPEATED_NOTES], due[MAX_REPEATED_NOTES:] + rest
+
+
+def queued_bulletins(queue: ProgramQueue, slot: datetime) -> list[str]:
+    """Ids of the queued news items of `slot` (what a re-preparation replaces)."""
+    slot_utc = slot.astimezone(timezone.utc)
+    return [i.id for i in queue.items()
+            if i.lane == "news" and i.status == "queued" and parse_time(i.not_before) == slot_utc]
+
+
+def usable_source(result: Any) -> bool:
+    """A source result with content (not empty, not a plugin's error message)."""
+    text = str(result or "").strip()
+    return bool(text) and not text.casefold().startswith(UNAVAILABLE_MARKERS)
 
 
 # ---------- last bulletin ----------
@@ -199,6 +260,8 @@ class NewsSession:
         tts: TTSEngine | None,
         offered_notes: tuple[list[dict], list[dict]] = ([], []),
         last_path: Path | None = None,
+        still_wanted: Any = None,
+        replacing: Any = (),
     ):
         self.slot = slot
         self.fmt = fmt
@@ -208,13 +271,22 @@ class NewsSession:
         self.tts = tts
         self.mandatory, self.optional = offered_notes
         self.last_path = last_path
+        # () -> bool: the slot is still configured and the desk enabled (re-checked when scheduling).
+        self.still_wanted = still_wanted
+        self.replacing = set(replacing or ())
         self.item: QueueItem | None = None
         self.used_notes: list[str] = []
 
     @property
     def expires_at(self) -> datetime:
         # In UTC: Python adds to/compares datetimes of one tzinfo by wall clock (wrong across DST).
-        return self.slot.astimezone(timezone.utc) + timedelta(minutes=int(self.settings.get("max_delay_minutes", 15)))
+        slot_utc = self.slot.astimezone(timezone.utc)
+        expires = slot_utc + timedelta(minutes=int(self.settings.get("max_delay_minutes", 15)))
+        # Never past the next slot: two bulletins must not air back to back.
+        following = slot_times(normalize_slots(self.settings.get("slots")) or [], slot_utc, hours=2)
+        if following:
+            expires = min(expires, following[0][0].astimezone(timezone.utc))
+        return expires
 
     def schedule_news(self, text: str = "", note_ids: Any = None, **_ignored: Any) -> str:
         text = " ".join(str(text or "").split())
@@ -224,6 +296,9 @@ class NewsSession:
             return f"Die Ausgabe für {hhmm_local(self.slot)} ist schon eingeplant. Beende den Durchlauf."
         if _now() >= self.expires_at:
             return f"Zu spät: die Ausgabe für {hhmm_local(self.slot)} wäre schon verfallen. Beende den Durchlauf."
+        if self.still_wanted is not None and not self.still_wanted():
+            return (f"Der Slot {hhmm_local(self.slot)} ist nicht mehr eingeplant (Slots geändert oder Redaktion "
+                    "ausgeschaltet) - nichts eingeplant. Beende den Durchlauf.")
         if self.tts is None:
             return "Keine Stimme verfügbar - die Nachrichten können nicht gesprochen werden."
 
@@ -251,10 +326,11 @@ class NewsSession:
 
         offered = {n["id"] for n in self.mandatory + self.optional}
         wanted = _id_list(note_ids)
+        # Only what this version reads stays with the slot; notes of a replaced version it leaves
+        # out go back to the mailbox (app/program/calls.py) and into the next bulletin.
         ids = [i for i in wanted if i in offered] if wanted is not None else [n["id"] for n in self.mandatory]
-        # Notes of the replaced version stay with the slot (they'd go back to the mailbox otherwise).
-        ids += [n["id"] for n in self.mandatory + self.optional if n.get("queue_item_id") in replaced and n["id"] not in ids]
-        self.used_notes = self.notes.mark_in_bulletin(ids, item.id, slot_utc.isoformat()) if ids else []
+        self.used_notes = self.notes.mark_in_bulletin(ids, item.id, slot_utc.isoformat(),
+                                                      replacing=self.replacing | set(replaced)) if ids else []
         if self.last_path is not None:
             write_json_atomic(self.last_path, {
                 "slot": slot_utc.isoformat(), "format": self.fmt, "text": text, "item_id": item.id,
@@ -324,10 +400,19 @@ def _id_list(value: Any) -> list[str] | None:
 
 
 def prepared_for(queue: ProgramQueue, slot: datetime) -> QueueItem | None:
-    """The news item (queued, on air or aired) of `slot`, if one was prepared."""
+    """The news item of `slot`, if one was prepared: queued, on air, aired - or removed/skipped by
+    hand (the slot counts as handled, its notes go into the next bulletin). Expired ones don't count."""
     slot_utc = slot.astimezone(timezone.utc)
     for item in reversed(queue.items()):
-        if item.lane == "news" and (item.status in ACTIVE_STATUSES or item.status == "played") \
+        if item.lane == "news" and (item.status in ACTIVE_STATUSES or item.status in ("played", "removed", "skipped")) \
                 and parse_time(item.not_before) == slot_utc:
             return item
     return None
+
+
+def drop_unconfigured(queue: ProgramQueue, settings: dict[str, Any], enabled: bool) -> list[str]:
+    """Expires the queued bulletins of slots no longer configured (all of them when the desk is
+    off); their notes come back with the next calls sync. Returns the expired item ids."""
+    stale = [i.id for i in queue.items() if i.lane == "news" and i.status == "queued"
+             and (not enabled or (at := parse_time(i.not_before)) is None or not slot_configured(settings, at))]
+    return queue.expire_items(stale, "Slot nicht mehr eingeplant") if stale else []

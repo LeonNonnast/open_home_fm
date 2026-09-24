@@ -60,6 +60,9 @@ from app.program.news import (
     normalize_slots,
     notes_for,
     prepared_for,
+    queued_bulletins,
+    slot_configured,
+    usable_source,
 )
 from app.program.queue import ProgramQueue, QueueItem
 
@@ -90,6 +93,7 @@ DESK_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_delay_minutes": 15,
         "sources": ["news", "weather", "notes"],
         "intro": True,
+        "note_repeat_hours": 3,
         "max_tool_iterations": 8,
         "history_runs": 0,
         "plugins": [],
@@ -129,6 +133,7 @@ SETTING_BOUNDS: dict[str, tuple[int, int]] = {
     "wish_default_valid_hours": (1, 336),
     "lead_minutes": (1, 15),
     "max_delay_minutes": (1, 30),
+    "note_repeat_hours": (0, 48),
 }
 
 
@@ -635,7 +640,13 @@ class DeskRunner:
 
     def _run_news(self, trigger: str) -> dict:
         """Prepares the bulletin of the next slot (in the broadcast window): fetches the sources,
-        hands the format to the LLM, which calls schedule_news once."""
+        hands the format to the LLM, which calls schedule_news once.
+
+        When no source delivers usable content (plugins failed or empty) and there's no note to
+        read, the LLM isn't asked at all (it would make news up): nothing is queued, the run is
+        no failure (no backoff) - "keine Nachrichten verfügbar". While the slot is ahead, the
+        watcher asks again (cheap, only the sources are fetched), so a source that recovers still
+        makes it into the bulletin."""
         config = load_config()
         desk = DeskConfig.from_config("news", config)
         s = desk.settings
@@ -645,15 +656,28 @@ class DeskRunner:
                     "final_message": "Keine Ausgabe im Sendefenster der nächsten 48 Stunden."}
         slot, fmt = target
         sources = set(s["sources"])
+        replacing = queued_bulletins(self.queue, slot)
+        offered = notes_for(fmt, self.news_notes, replacing=replacing, repeat_hours=s["note_repeat_hours"],
+                            slot=slot) if "notes" in sources else ([], [])
+        context, usable = self._news_context(config, sources, fmt)
+        if not usable and not offered[0]:
+            message = f"Keine Nachrichten verfügbar: keine Quelle hat Inhalte geliefert - {hhmm_local(slot)} entfällt."
+            logger.info("News desk: %s", message)
+            return {"desk": "news", "trigger": trigger, "error": None, "items": [], "final_message": message,
+                    "slot": slot.isoformat(), "format": fmt, "notes_used": []}
         tts = create_tts_engine(config, resolve_path(config["audio"]["jingle_cache_dir"]))
         llm = create_llm_provider(config)
-        offered = notes_for(fmt, self.news_notes) if "notes" in sources else ([], [])
-        session = NewsSession(slot, fmt, s, self.queue, self.news_notes, tts, offered, self.news_last_path)
+
+        def still_wanted() -> bool:
+            current = DeskConfig.from_config("news", load_config())
+            return current.enabled and slot_configured(current.settings, slot)
+
+        session = NewsSession(slot, fmt, s, self.queue, self.news_notes, tts, offered, self.news_last_path,
+                              still_wanted=still_wanted, replacing=replacing)
 
         registry = ToolRegistry()
         registry.register(session.tool())
         self._register_plugins(registry, desk, config)
-        context = self._news_context(config, sources, fmt)
 
         messages = [LLMMessage(role="system", content=load_system_prompt("news"))]
         if context:
@@ -676,17 +700,19 @@ class DeskRunner:
             "notes_used": session.used_notes, "transcript_id": transcript.stem,
         }
 
-    def _news_context(self, config: dict, sources: set[str], fmt: str) -> str:
-        """The news and weather plugins' results for this bulletin (always fetched fresh)."""
+    def _news_context(self, config: dict, sources: set[str], fmt: str) -> tuple[str, int]:
+        """The news and weather plugins' results for this bulletin (always fetched fresh), and how
+        many of them carry content (not failed, empty or a plugin's error message)."""
         wanted = {SOURCE_PLUGINS[s]: s for s in ("news", "weather") if s in sources}
         if not wanted:
-            return ""
+            return "", 0
         headlines, forecast = FORMAT_SOURCES[fmt]
         args = {"news": {"limit": headlines}, "weather": {"forecast": True} if forecast else {}}
         disabled = config.get("plugins", {}).get("disabled")
         tools = {t.name: t for t in discover_plugins(self.plugins_dir, disabled) if t.name in wanted}
         titles = {"news": "Schlagzeilen", "weather": "Wetter" + (" mit Vorhersage" if forecast else " (jetzt)")}
         blocks = []
+        usable = 0
         for name, source in wanted.items():
             tool = tools.get(name)
             if tool is None:
@@ -701,8 +727,10 @@ class DeskRunner:
             except Exception as exc:
                 logger.warning("News source %s failed: %s", name, exc)
                 result = f"nicht verfügbar ({exc}) - diesen Teil weglassen."
+            usable += usable_source(result)
             blocks.append(f"### {titles[source]}\n{result}")
-        return "Quellen für diese Ausgabe (automatisch geladen, kein Tool-Aufruf nötig):\n\n" + "\n\n".join(blocks)
+        return ("Quellen für diese Ausgabe (automatisch geladen, kein Tool-Aufruf nötig):\n\n" + "\n\n".join(blocks),
+                usable)
 
     def _news_user_message(self, slot: datetime, fmt: str, s: dict, offered: tuple[list[dict], list[dict]]) -> str:
         sources = set(s["sources"])
@@ -732,11 +760,13 @@ class DeskRunner:
 
         if "notes" in sources:
             mandatory, optional = offered
+            replacing = set(queued_bulletins(self.queue, slot))  # their unaired notes count as new
 
             def line(note: dict) -> str:
                 author = f" (von {note['author']})" if note.get("author") else ""
                 until = f", gültig bis {hhmm(note['valid_until'], '%d.%m. %H:%M')}" if note.get("valid_until") else ""
-                aired = " - schon einmal gemeldet" if note["status"] == "used" else ""
+                repeat = note["status"] == "used" and (note.get("aired_at") or note.get("queue_item_id") not in replacing)
+                aired = " - schon einmal gemeldet" if repeat else ""
                 return f"- {note.get('text', '')}{author} [note_id={note['id']}{until}{aired}]"
 
             if mandatory:

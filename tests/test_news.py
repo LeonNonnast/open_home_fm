@@ -22,6 +22,8 @@ from app.program.news import (
     next_slot,
     normalize_slots,
     notes_for,
+    prepared_for,
+    queued_bulletins,
     slot_times,
 )
 from app.program.queue import ProgramQueue, QueueItem, Segment
@@ -218,6 +220,7 @@ def _plugins(root: Path) -> None:
 @pytest.fixture
 def news_env(config_env, fake_tts, monkeypatch):
     _plugins(config_env)
+    cfg.update_config({"desks": {"news": {"enabled": True}}})  # schedule_news re-checks it
     llm = ScriptedLLM([])
     monkeypatch.setattr(desk_module, "create_tts_engine", lambda config, cache_dir: fake_tts)
     monkeypatch.setattr(desk_module, "create_llm_provider", lambda config: llm)
@@ -240,7 +243,7 @@ def test_full_bulletin_gets_format_sources_and_all_notes(news_env):
     slot = _slot_in(4, fmt="full")
     new = runner.news_notes.add("Morgen ist Sperrmüll", author="Mama", valid_until=datetime.now(timezone.utc) + timedelta(days=1))
     aired = runner.news_notes.add("Oma kommt am Sonntag", valid_until=datetime.now(timezone.utc) + timedelta(days=2))
-    runner.news_notes.mark_in_bulletin([aired["id"]], "old-item", "2026-09-24T06:00:00+00:00")
+    runner.news_notes.mark_in_bulletin([aired["id"]], "old-item", (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat())
     stale = runner.news_notes.add("Gestern war Markt", valid_until=datetime.now(timezone.utc) - timedelta(hours=1))
     llm.turns = [[("schedule_news", {"text": "In Berlin scheint die Sonne. Aus dem Haushalt: morgen ist Sperrmüll."})],
                  "fertig"]
@@ -320,12 +323,16 @@ def test_schedule_news_rejects_a_second_call_late_calls_and_replaces_on_re_prepa
     assert "schon eingeplant" in first.schedule_news("noch mal")
     assert notes.get(note["id"])["queue_item_id"] == first.item.id
 
-    second = NewsSession(slot, "full", settings, queue, notes, fake_tts, notes_for("full", notes))
+    replacing = queued_bulletins(queue, slot)
+    second = NewsSession(slot, "full", settings, queue, notes, fake_tts, notes_for("full", notes, replacing=replacing),
+                         replacing=replacing)
     assert "ersetzt" in second.schedule_news("Neue Fassung.", note_ids=[])
     assert queue.get(first.item.id).status == "removed"
     assert queue.get(second.item.id).status == "queued"
-    # The note of the replaced version moves with the slot instead of going back to the mailbox.
-    assert notes.get(note["id"])["queue_item_id"] == second.item.id
+    # A note the new version doesn't read isn't attached to it: it goes back to the mailbox.
+    assert notes.get(note["id"])["queue_item_id"] == first.item.id
+    follow_news_notes(notes, {i.id: i for i in queue.items()})
+    assert notes.get(note["id"])["status"] == "noted"
 
     late = NewsSession(datetime.now(BERLIN) - timedelta(minutes=20), "short", settings, queue, notes, fake_tts)
     assert "Zu spät" in late.schedule_news("egal")
@@ -339,8 +346,9 @@ def test_notes_come_back_when_their_bulletin_did_not_air(config_env):
     aired = notes.add("gesendet", valid_until=until)
     item_missed = queue.append(QueueItem.new("news", "news", [Segment("jingle", "N", "/a.wav")]))
     item_aired = queue.append(QueueItem.new("news", "news", [Segment("jingle", "N", "/b.wav")]))
-    notes.mark_in_bulletin([missed["id"]], item_missed.id, "2026-09-24T05:00:00+00:00")
-    notes.mark_in_bulletin([aired["id"]], item_aired.id, "2026-09-24T05:00:00+00:00")
+    earlier = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    notes.mark_in_bulletin([missed["id"]], item_missed.id, earlier)
+    notes.mark_in_bulletin([aired["id"]], item_aired.id, earlier)
     queue.expire_lanes(("news",), "abgelaufen")
     items = {i.id: i for i in queue.items()}
     items[item_aired.id].status = "played"
@@ -425,3 +433,134 @@ def test_player_drops_news_after_their_expiry(config_env):
         assert any("verfallen" in line for line in player.status()["log"])
     finally:
         player.stop()
+
+
+# ---------- review fixes ----------
+
+def _bulletin(queue: ProgramQueue, slot: datetime) -> QueueItem:
+    return queue.append(QueueItem.new("news", "news", [Segment("jingle", "N", "/x.wav")],
+                                      not_before=slot.astimezone(timezone.utc).isoformat()))
+
+
+def test_a_bulletin_removed_by_hand_counts_as_handled(recorder):
+    scheduler = DeskScheduler(recorder)
+    slot = _slot_in(3)
+    item = _bulletin(recorder.queue, slot)
+    recorder.queue.remove(item.id)
+    assert prepared_for(recorder.queue, slot) is not None
+    scheduler.watch_news()
+    assert scheduler.news_trigger() is None and recorder.runs == []
+    # An expired one doesn't count (e.g. a slot that was dropped and configured again).
+    recorder.queue.restore(item.id)
+    recorder.queue.expire_items([item.id], "weg")
+    assert prepared_for(recorder.queue, slot) is None
+
+
+def test_re_prepare_offers_the_replaced_notes_as_new_and_keeps_only_the_named_ones(config_env, fake_tts):
+    queue = ProgramQueue(config_env / "data" / "queue.json", config_env / "data" / "cursor.json")
+    notes = news_mailbox(config_env / "data")
+    settings = DeskConfig.from_config("news", cfg.load_config()).settings
+    slot = datetime.now(BERLIN).replace(second=0, microsecond=0) + timedelta(minutes=5)
+    once = notes.add("Paket kommt")  # no valid_until: aired once
+    lasting = notes.add("Sperrmüll", valid_until=datetime.now(timezone.utc) + timedelta(days=1))
+    first = NewsSession(slot, "short", settings, queue, notes, fake_tts, notes_for("short", notes))
+    first.schedule_news("Paket kommt heute, und Sperrmüll.")
+    assert sorted(first.used_notes) == sorted([once["id"], lasting["id"]])
+
+    replacing = queued_bulletins(queue, slot)
+    offered = notes_for("short", notes, replacing=replacing)
+    assert {n["id"] for n in offered[0]} == {once["id"], lasting["id"]}  # new again, not one slot late
+    second = NewsSession(slot, "short", settings, queue, notes, fake_tts, offered, replacing=replacing)
+    second.schedule_news("Nur das Paket.", note_ids=[once["id"]])
+    assert second.used_notes == [once["id"]]
+    follow_news_notes(notes, {i.id: i for i in queue.items()})
+    assert notes.get(once["id"])["queue_item_id"] == second.item.id and notes.get(once["id"])["status"] == "used"
+    # Not in the new version: back to the mailbox instead of blindly riding along.
+    assert notes.get(lasting["id"])["status"] == "noted"
+
+
+def test_expiry_is_capped_at_the_next_slot(config_env, fake_tts):
+    queue = ProgramQueue(config_env / "data" / "queue.json", config_env / "data" / "cursor.json")
+    notes = news_mailbox(config_env / "data")
+    slot = local(2026, 9, 24, 7, 0)
+    settings = {"slots": [{"minute": "00", "format": "full"}, {"minute": "20", "format": "short"}],
+                "max_delay_minutes": 30}
+    assert NewsSession(slot, "full", settings, queue, notes, fake_tts).expires_at == local(2026, 9, 24, 7, 20)
+    settings["max_delay_minutes"] = 15
+    assert NewsSession(slot, "full", settings, queue, notes, fake_tts).expires_at == local(2026, 9, 24, 7, 15)
+
+
+def test_full_bulletins_cap_and_space_out_repeated_notes(config_env):
+    notes = news_mailbox(config_env / "data")
+    now = datetime.now(timezone.utc)
+    long_ago, just_now = (now - timedelta(hours=5)).isoformat(), (now - timedelta(minutes=30)).isoformat()
+    aired = [notes.add(f"alt {i}", valid_until=now + timedelta(days=i + 1)) for i in range(5)]
+    for i, note in enumerate(aired):
+        notes.mark_in_bulletin([note["id"]], f"old-{i}", just_now if i == 0 else long_ago)
+    new = notes.add("neu")
+    mandatory, optional = notes_for("full", notes, repeat_hours=3)
+    # New first; then the 3 soonest expiring of those not repeated in the last 3 hours.
+    assert [n["id"] for n in mandatory] == [new["id"]] + [n["id"] for n in aired[1:4]]
+    assert {n["id"] for n in optional} == {aired[0]["id"], aired[4]["id"]}
+    assert len(notes_for("full", notes, repeat_hours=0)[0]) == 1 + 3
+
+
+def test_no_usable_source_and_no_notes_skips_the_llm(news_env):
+    runner, llm = news_env, news_env.llm
+    for folder, text in (("news", "News konnten nicht geladen werden: timeout"), ("weather", "Wetter derzeit nicht verfügbar.")):
+        (runner.plugins_dir / folder / "plugin.py").write_text(f"def execute(*a, **k):\n    return {text!r}\n")
+    _slot_in(4)
+    result = runner.run("news", "slot")
+    assert result["error"] is None and "Keine Nachrichten verfügbar" in result["final_message"]
+    assert llm.requests == [] and _run_items(runner) == []
+    # A new note is content: the desk runs.
+    runner.news_notes.add("Oma kommt")
+    llm.turns = [[("schedule_news", {"text": "Oma kommt."})], "ok"]
+    assert runner.run("news", "slot")["error"] is None and len(_run_items(runner)) == 1
+
+
+def test_schedule_news_rechecks_slot_and_desk(news_env):
+    runner = news_env
+    slot = _slot_in(4)
+    llm = runner.llm
+    other = f"{(slot.minute + 20) % 60:02d}"
+
+    chat = llm.chat
+
+    def change_slots_then_chat(messages, tools):
+        # The slot is removed while the run is going (before the model calls schedule_news).
+        cfg.update_config({"desks": {"news": {"slots": [{"minute": other, "format": "full"}]}}})
+        return chat(messages, tools)
+
+    llm.chat = change_slots_then_chat
+    llm.turns = [[("schedule_news", {"text": "Zu spät geändert."})], "ok"]
+    runner.run("news", "slot")
+    assert _run_items(runner) == []
+    session = NewsSession(slot, "full", {"slots": SLOTS}, runner.queue, runner.news_notes, runner.tts,
+                          still_wanted=lambda: False)
+    assert "nicht mehr eingeplant" in session.schedule_news("Text") and session.item is None
+
+
+def test_weather_plugin_reports_api_errors(monkeypatch):
+    import importlib.util
+
+    import httpx
+
+    spec = importlib.util.spec_from_file_location("weather_plugin", Path(__file__).parents[1] / "plugins" / "weather" / "plugin.py")
+    weather = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(weather)
+    monkeypatch.setattr(weather, "load_plugin_settings", lambda name: {"location": "X", "latitude": 1, "longitude": 2})
+    answers = []
+
+    real_client = httpx.Client
+
+    def client(**kwargs):
+        return real_client(transport=httpx.MockTransport(lambda request: answers[0]))
+
+    monkeypatch.setattr(weather.httpx, "Client", client)
+    for answer in (httpx.Response(429, json={"error": True, "reason": "Too many requests"}),
+                   httpx.Response(200, json={"error": True}), httpx.Response(200, text="<html>")):
+        answers[:] = [answer]
+        assert weather.execute() == "Wetter derzeit nicht verfügbar."
+    answers[:] = [httpx.Response(200, json={"current_weather": {"temperature": 18.5, "windspeed": 7, "weathercode": 0}})]
+    assert weather.execute() == "Aktuelles Wetter in X: 18.5°C, klar, Wind 7 km/h."

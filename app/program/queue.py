@@ -309,6 +309,21 @@ class ProgramQueue:
                 logger.info("Expired %d queue item(s): %s", count, note)
         return count
 
+    def expire_items(self, item_ids: list[str], note: str) -> list[str]:
+        """Expires the queued items `item_ids` (not one already on air); returns the expired ids."""
+        now = _now()
+        expired = []
+        with self._lock:
+            items = self._load()
+            for item in items:
+                if item.id in item_ids and item.status == "queued":
+                    self._set_status(item, "expired", now, note=note)
+                    expired.append(item.id)
+            if expired:
+                self._save(items)
+                logger.info("Expired %d queue item(s): %s", len(expired), note)
+        return expired
+
     def expire_other_providers(self, provider: str, note: str, lanes: tuple[str, ...] = ("program", "filler")) -> int:
         """Expires active items of `lanes` with tracks of another music source than `provider`
         (their URIs can't be played after switching `music.provider`)."""

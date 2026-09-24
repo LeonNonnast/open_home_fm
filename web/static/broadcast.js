@@ -391,7 +391,7 @@
         showUndo(id, btn.dataset.lane === "reply"
           ? "Antwort entfernt – im Gespräch steht „vom Sender entfernt“."
           : btn.dataset.lane === "news"
-            ? "Nachrichten entfernt – ihre Hinweise kommen in die nächste Ausgabe."
+            ? "Nachrichten entfernt – dieser Slot fällt aus, ihre Hinweise kommen in die nächste Ausgabe."
           : count
             ? `Block mit ${count} Titeln entfernt – die Musikredaktion plant nach.`
             : "Beitrag entfernt.");

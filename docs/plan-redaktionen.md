@@ -291,7 +291,8 @@ class DeskConfig:
   Eilmeldungen landen automatisch im Postfach und werden in der nächsten Ausgabe wiederholt.
   Verwendete Hinweise werden als `used` markiert (Zwischenruf zeigt „in den Nachrichten 08:00“).
 - Tool `schedule_news(text)`: `news`-Beitrag mit `not_before = Slot`,
-  `expires_at = Slot + max_delay_minutes` (15). `placement: after_song` (Standard) oder
+  `expires_at = Slot + max_delay_minutes` (15), höchstens bis zum nächsten Slot
+  (`max_delay_minutes` < kürzester Slot-Abstand). `placement: after_song` (Standard) oder
   `on_time` (erst mit Phase 4).
 
 ### 3.6 Leitstelle: Ablauf eines Zwischenrufs
