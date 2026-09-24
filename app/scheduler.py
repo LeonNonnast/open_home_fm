@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -31,7 +32,9 @@ class AgentScheduler:
 
     def start(self) -> None:
         interval = load_config().get("agent", {}).get("loop_interval_seconds", 300)
-        self._job = self._scheduler.add_job(self._tick, "interval", seconds=interval, next_run_time=None)
+        # next_run_time=None would add the job *paused* in APScheduler 3.x, so it would never fire.
+        # Run the first tick right away instead of waiting a full interval after startup.
+        self._job = self._scheduler.add_job(self._tick, "interval", seconds=interval, next_run_time=datetime.now())
         self._scheduler.start()
         logger.info("Agent scheduler started, interval=%ds", interval)
 
