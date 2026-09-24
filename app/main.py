@@ -21,6 +21,7 @@ from app.api.routes_voice import router as voice_router
 from app.audio.player import ScriptPlayer
 from app.audio.stt import create_stt_engine
 from app.config import ROOT_DIR, load_config
+from app.migrate import migrate_user_data
 from app.music import create_music_provider
 from app.scheduler import AgentScheduler
 
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # For installations updated with a plain `git pull` instead of install.sh --update.
+    try:
+        migrate_user_data()
+    except Exception:
+        logger.exception("Migrating local settings into data/ failed - continuing with what's there")
     config = load_config()
 
     agent_loop = AgentLoop(ROOT_DIR)

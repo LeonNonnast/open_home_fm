@@ -51,12 +51,13 @@
         <section class="card" aria-labelledby="h-prompt">
           <div class="card-head">
             <h2 id="h-prompt">Systemprompt</h2>
-            <span class="meta">config/system_prompt.md</span>
+            <span class="meta" id="prompt-meta"></span>
           </div>
           <label class="label" for="system-prompt" hidden>Systemprompt</label>
           <textarea id="system-prompt" spellcheck="false" rows="14"></textarea>
           <div class="card-foot">
             <button class="btn" id="save-prompt" type="button">Prompt speichern</button>
+            <button class="btn ghost" id="reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
             <span class="note" id="prompt-note" role="status"></span>
           </div>
         </section>
@@ -201,8 +202,8 @@
 
         <details class="card advanced">
           <summary>Erweitert</summary>
-          <p class="hint" style="margin-bottom:10px;">Die komplette config.yaml als JSON. Formularfelder oben haben beim Speichern Vorrang.</p>
-          <label for="raw-config" hidden>config.yaml als JSON</label>
+          <p class="hint" style="margin-bottom:10px;">Die komplette Konfiguration als JSON. „Speichern“ übernimmt genau diesen Stand – entfernte Schlüssel fallen auf den Standardwert zurück.</p>
+          <label for="raw-config" hidden>Konfiguration als JSON</label>
           <textarea id="raw-config" class="code" spellcheck="false"></textarea>
           <div class="card-foot">
             <button class="btn ghost" id="sync-raw" type="button">In Felder übernehmen</button>

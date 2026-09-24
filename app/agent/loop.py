@@ -1,7 +1,7 @@
 """The generation half: one LLM-driven pass that turns the inbox + config into a new script.
 
 This is deliberately re-entrant and stateless across runs (aside from files on disk): every
-call to `run_once()` re-reads config.yaml / system_prompt.md and re-scans ./plugins, so editing
+call to `run_once()` re-reads the config and the music prompt and re-scans ./plugins, so editing
 either through the web UI takes effect on the very next scheduled tick without a restart.
 """
 from __future__ import annotations

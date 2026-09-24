@@ -1,6 +1,3 @@
-<!-- Deprecated, no longer read: the default prompt now lives in config/desks/music.md, a
-     customized one (web UI) in data/prompts/music.md. This copy will be removed in the next version. -->
-
 # System Prompt
 
 Du bist der Programm-Redakteur eines lokalen Radiosenders ("open home fm"), der von einem

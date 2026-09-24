@@ -1,11 +1,19 @@
-"""Loads and persists config/config.yaml + config/system_prompt.md.
+"""Loads and persists the configuration: tracked defaults + the user's own overrides.
 
-Both files are meant to be human-editable (by hand or through the web UI), so this module
-re-reads them from disk on every access rather than caching indefinitely - the agent loop and
-the config API must always see the latest version.
+- `config/config.yaml` (tracked) holds the defaults, `data/config.yaml` (gitignored) only the
+  values the user changed. `load_config()` merges the two, `save_config()` writes back just the
+  difference - so updates never conflict with web-UI edits, and a changed default reaches
+  everyone who never touched that value.
+- Prompts work the same way: `config/desks/<desk>.md` is the default, `data/prompts/<desk>.md`
+  exists only once the prompt was customized.
+
+Both user files are human-editable, so they're re-read whenever their mtime changes (cheap
+enough to call per player segment) rather than cached indefinitely.
 """
 from __future__ import annotations
 
+import copy
+import os
 import threading
 from datetime import datetime, time as dtime
 from pathlib import Path
@@ -16,24 +24,109 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
-CONFIG_PATH = CONFIG_DIR / "config.yaml"
-SYSTEM_PROMPT_PATH = CONFIG_DIR / "system_prompt.md"
+DATA_DIR = ROOT_DIR / "data"
+DEFAULTS_PATH = CONFIG_DIR / "config.yaml"
+USER_CONFIG_PATH = DATA_DIR / "config.yaml"
+DESKS_DIR = CONFIG_DIR / "desks"
+USER_PROMPTS_DIR = DATA_DIR / "prompts"
+
+USER_CONFIG_HEADER = (
+    "# Your settings - only the values that differ from config/config.yaml (the defaults).\n"
+    "# Written by the web UI/installer; hand edits are fine. Delete a key to go back to its default.\n"
+)
 
 load_dotenv(ROOT_DIR / ".env")
 
-_lock = threading.Lock()
+# Reentrant: update_config() loads and saves under one lock.
+_lock = threading.RLock()
+_cache: tuple[tuple, dict[str, Any]] | None = None
+
+
+def deep_merge(base: Any, override: Any) -> Any:
+    """Dicts merge recursively; anything else (lists included) is replaced by `override`."""
+    if isinstance(base, dict) and isinstance(override, dict):
+        return {**base, **{key: deep_merge(base.get(key), value) for key, value in override.items()}}
+    return copy.deepcopy(override)
+
+
+def config_diff(defaults: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """The part of `config` that differs from `defaults` - the inverse of deep_merge.
+
+    Keys missing from `config` can't be expressed and simply fall back to their default.
+    """
+    diff: dict[str, Any] = {}
+    for key, value in config.items():
+        default = defaults.get(key) if isinstance(defaults, dict) else None
+        if isinstance(value, dict) and isinstance(default, dict):
+            nested = config_diff(default, value)
+            if nested:
+                diff[key] = nested
+        elif key not in defaults or value != default:
+            diff[key] = copy.deepcopy(value)
+    return diff
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _stamp(path: Path) -> tuple | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    # A crash mid-write must never leave a truncated settings file behind.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_defaults() -> dict[str, Any]:
+    return _read_yaml(DEFAULTS_PATH)
+
+
+def load_user_config() -> dict[str, Any]:
+    return _read_yaml(USER_CONFIG_PATH)
 
 
 def load_config() -> dict[str, Any]:
+    """Defaults merged with the user's overrides. Returns a fresh copy callers may mutate."""
+    global _cache
     with _lock:
-        with CONFIG_PATH.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        key = (DEFAULTS_PATH, _stamp(DEFAULTS_PATH), USER_CONFIG_PATH, _stamp(USER_CONFIG_PATH))
+        if _cache is None or _cache[0] != key:
+            _cache = (key, deep_merge(load_defaults(), load_user_config()))
+        return copy.deepcopy(_cache[1])
+
+
+def write_user_config(overrides: dict[str, Any]) -> None:
+    global _cache
+    with _lock:
+        body = yaml.safe_dump(overrides, allow_unicode=True, sort_keys=False) if overrides else ""
+        _write_atomic(USER_CONFIG_PATH, USER_CONFIG_HEADER + body)
+        _cache = None
 
 
 def save_config(config: dict[str, Any]) -> None:
+    """Stores a complete config - only its difference from the defaults ends up on disk."""
     with _lock:
-        with CONFIG_PATH.open("w", encoding="utf-8") as f:
-            yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+        write_user_config(config_diff(load_defaults(), config))
+
+
+def update_config(partial: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merges `partial` into the current config, saves, and returns the new config."""
+    with _lock:
+        config = deep_merge(load_config(), partial)
+        save_config(config)
+        return config
 
 
 def load_plugin_settings(plugin: str) -> dict[str, Any]:
@@ -41,14 +134,43 @@ def load_plugin_settings(plugin: str) -> dict[str, Any]:
     return (load_config().get("plugins", {}).get("settings", {}) or {}).get(plugin, {}) or {}
 
 
-def load_system_prompt() -> str:
-    with _lock:
-        return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+def default_prompt_path(desk: str = "music") -> Path:
+    return DESKS_DIR / f"{desk}.md"
 
 
-def save_system_prompt(text: str) -> None:
+def user_prompt_path(desk: str = "music") -> Path:
+    return USER_PROMPTS_DIR / f"{desk}.md"
+
+
+def load_default_prompt(desk: str = "music") -> str:
+    return default_prompt_path(desk).read_text(encoding="utf-8")
+
+
+def is_prompt_customized(desk: str = "music") -> bool:
+    return user_prompt_path(desk).exists()
+
+
+def load_system_prompt(desk: str = "music") -> str:
+    """The user's prompt for `desk` if customized, else the default."""
     with _lock:
-        SYSTEM_PROMPT_PATH.write_text(text, encoding="utf-8")
+        path = user_prompt_path(desk)
+        return path.read_text(encoding="utf-8") if path.exists() else load_default_prompt(desk)
+
+
+def save_system_prompt(text: str, desk: str = "music") -> None:
+    with _lock:
+        # Saving the unchanged default keeps following the default (and its future updates).
+        if text == load_default_prompt(desk):
+            user_prompt_path(desk).unlink(missing_ok=True)
+        else:
+            _write_atomic(user_prompt_path(desk), text)
+
+
+def reset_system_prompt(desk: str = "music") -> str:
+    """Drops the customized prompt, returns the default that's active again."""
+    with _lock:
+        user_prompt_path(desk).unlink(missing_ok=True)
+        return load_default_prompt(desk)
 
 
 def resolve_path(relative: str) -> Path:

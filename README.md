@@ -115,7 +115,7 @@ cd open_home_fm
 
 Das Script prüft die [Voraussetzungen](#voraussetzungen), installiert die Python-Abhängigkeiten, fragt interaktiv die nötige
 Konfiguration ab (LLM-Provider + API-Key, Musikquelle, Stimme, Audio-Ausgang, Loop-Intervall,
-Plugins) und schreibt `.env` sowie `config/config.yaml` entsprechend. Danach direkt startklar:
+Plugins) und schreibt `.env` sowie `data/config.yaml` entsprechend. Danach direkt startklar:
 
 ```
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -132,10 +132,23 @@ eingetragenen Werte als Default vor.
 ```
 
 Holt den neuen Code, aktualisiert die Python-Abhängigkeiten und startet den systemd-Service
-`open-home-fm` neu - ohne Rückfragen. Über das Web-UI geänderte Einstellungen in
-`config/config.yaml` bleiben erhalten, neu hinzugekommene Optionen werden mit ihren Defaults
-ergänzt. Ein normales `./install.sh` bietet bei bestehender Installation dasselbe Schnell-Update
-als Standard an.
+`open-home-fm` neu - ohne Rückfragen. Ein normales `./install.sh` bietet bei bestehender
+Installation dasselbe Schnell-Update als Standard an.
+
+### Konfiguration
+
+- `config/config.yaml` enthält nur die **Defaults** (im Repo, nicht selbst bearbeiten).
+- `data/config.yaml` (nicht im Repo) enthält **nur deine Abweichungen** davon - Web-UI und
+  Installer schreiben dorthin. Zur Laufzeit wird beides zusammengeführt; geänderte Defaults eines
+  Updates erreichen so alle Werte, die du nie angefasst hast. Von Hand ändern: nur den jeweiligen
+  Schlüssel (mit seinen Eltern-Schlüsseln) in `data/config.yaml` eintragen; Schlüssel löschen =
+  zurück zum Default.
+- Prompt: Standard in `config/desks/music.md`, ein im Web-UI angepasster liegt in
+  `data/prompts/music.md` („Auf Standard zurücksetzen“ löscht ihn wieder).
+- Ältere Installationen, bei denen das Web-UI noch in `config/config.yaml`/`config/system_prompt.md`
+  geschrieben hat, werden beim Update (oder App-Start nach einem manuellen `git pull`) automatisch
+  umgezogen: die lokalen Werte landen in `data/`, die Repo-Dateien werden zurückgesetzt. Manuell:
+  `.venv/bin/python -m app.migrate`.
 
 ### Manuelles Setup / Details
 
@@ -148,7 +161,7 @@ als Standard an.
    ```
 3. **Konfiguration**: `cp .env.example .env` und Zugangsdaten eintragen, die du nutzen willst
    (Ollama Cloud API-Key, Anthropic-Key, Spotify Client-ID/Secret).
-4. **Musikquelle wählen** (`config/config.yaml` → `music.provider`):
+4. **Musikquelle wählen** (`data/config.yaml` → `music.provider`):
    - `local`: Audiodateien nach `data/library/<Playlist-Ordner>/*.mp3` legen.
    - `spotify`: [raspotify](https://github.com/dtcooper/raspotify) installieren (macht den Pi zu
      einem Spotify-Connect-Gerät) und in `/etc/raspotify/conf` `LIBRESPOT_NAME="open-home-fm"`
@@ -177,5 +190,11 @@ als Standard an.
 ## Entwicklung
 
 - Manuellen Loop-Durchlauf testen (ohne Scheduler): `python scripts/run_agent_once.py`
-- Agent-Verhalten anpassen: `config/system_prompt.md` (auch über die Web-UI editierbar)
+- Agent-Verhalten anpassen: Prompt über die Web-UI (landet in `data/prompts/music.md`, Standard:
+  `config/desks/music.md`)
+- Defaults in `config/config.yaml` ändern: vor dem nächsten App-Start/Update committen - eine
+  uncommittete Änderung hält die Migration sonst für eine Nutzereinstellung und zieht sie nach
+  `data/config.yaml`.
+- Tests: `.venv/bin/pip install -e ".[dev]"`, dann `.venv/bin/pytest` (`-m "not shell"` überspringt
+  die Update-Simulation mit `install.sh`)
 - Neues Tool hinzufügen: neuen Ordner unter `plugins/` mit `manifest.yaml` + `plugin.py` anlegen

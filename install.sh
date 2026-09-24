@@ -2,8 +2,9 @@
 # open home fm - interactive installer.
 #
 # Sets up the Python environment, asks for the configuration needed to actually run (LLM
-# provider + credentials, music source, TTS/STT), and writes .env + config/config.yaml
-# accordingly. Safe to re-run - existing answers are offered as defaults.
+# provider + credentials, music source, TTS/STT), and writes .env + data/config.yaml (your
+# settings, laid over the defaults in config/config.yaml) accordingly. Safe to re-run - existing
+# answers are offered as defaults.
 #
 # Usage (already cloned):  ./install.sh
 # Quick update only:       ./install.sh --update   (pull, dependencies, service restart - no questions)
@@ -25,8 +26,8 @@ if [ ! -f "pyproject.toml" ]; then
   fi
   TARGET_DIR="${OPEN_HOME_FM_DIR:-$PWD/open_home_fm}"
   if [ -d "$TARGET_DIR/.git" ]; then
-    # Not pulled here: the local config.yaml is usually modified (web UI), which a plain pull
-    # refuses - the local installer's quick update handles that.
+    # Not pulled here: older installations have a web-UI-modified config.yaml, which a plain
+    # pull refuses - the local installer's quick update handles that.
     echo "==> Bestehende Installation in $TARGET_DIR gefunden."
   else
     echo "==> Klone open home fm nach $TARGET_DIR ..."
@@ -99,67 +100,31 @@ restart_service() {
   fi
 }
 
+migrate_user_data() {
+  # Settings used to live in the tracked config/config.yaml + config/system_prompt.md. Local
+  # edits there move to data/config.yaml / data/prompts/music.md (gitignored), then the tracked
+  # files are restored - idempotent, a no-op once migrated.
+  .venv/bin/python3 -m app.migrate
+}
+
 finish_update() {
   info "Python-Abhängigkeiten aktualisieren"
   .venv/bin/pip install -q -e .
+  # Also catches the first update from a version before the split: its (old, already loaded)
+  # quick_update merged the local values back into config/config.yaml before exec-ing us.
+  migrate_user_data
   restart_service
   info "Update fertig ($(git log --oneline -1))."
 }
 
 quick_update() {
   info "Schnell-Update"
-  # config/config.yaml is tracked but rewritten by the web UI, so a plain pull would refuse to
-  # run. Set the local version aside, pull, then lay the local values over the new defaults -
-  # user settings survive, options added upstream arrive with their defaults.
-  local backup="" prompt_backup="" old_head
-  old_head="$(git rev-parse HEAD)"
-  if ! git diff --quiet -- config/config.yaml; then
-    backup="$(mktemp)"
-    cp config/config.yaml "$backup"
-    git checkout -- config/config.yaml
-  fi
-  # The system prompt is web-UI-editable too; an edited one is kept as-is.
-  if ! git diff --quiet -- config/system_prompt.md; then
-    prompt_backup="$(mktemp)"
-    cp config/system_prompt.md "$prompt_backup"
-    git checkout -- config/system_prompt.md
-  fi
+  # User settings live in data/ (gitignored), so the pull never touches them. Tracked config
+  # files that were edited anyway (by hand) are moved there first - a pull would refuse to run.
+  migrate_user_data
   if ! git pull --ff-only; then
-    [ -n "$backup" ] && cp "$backup" config/config.yaml && rm -f "$backup"
-    [ -n "$prompt_backup" ] && cp "$prompt_backup" config/system_prompt.md && rm -f "$prompt_backup"
     echo "git pull fehlgeschlagen - lokale Änderungen an anderen Dateien? Details: git status" >&2
     exit 1
-  fi
-  if [ -n "$prompt_backup" ]; then
-    if ! git diff --quiet "$old_head" HEAD -- config/system_prompt.md; then
-      git show HEAD:config/system_prompt.md > config/system_prompt.md.neu
-      note "System-Prompt: deine Version bleibt aktiv, der Update bringt aber einen neuen mit."
-      note "Zum Vergleichen: diff config/system_prompt.md config/system_prompt.md.neu"
-    fi
-    cp "$prompt_backup" config/system_prompt.md
-    rm -f "$prompt_backup"
-  fi
-  if [ -n "$backup" ]; then
-    .venv/bin/python3 - "$backup" <<'PYEOF'
-import sys
-from pathlib import Path
-
-import yaml
-
-
-def merge(defaults, local):
-    if isinstance(defaults, dict) and isinstance(local, dict):
-        return {**defaults, **{key: merge(defaults.get(key), value) for key, value in local.items()}}
-    return local
-
-
-config_path = Path("config/config.yaml")
-defaults = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-local = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
-config_path.write_text(yaml.safe_dump(merge(defaults, local), allow_unicode=True, sort_keys=False), encoding="utf-8")
-PYEOF
-    rm -f "$backup"
-    note "Lokale Einstellungen in config/config.yaml übernommen."
   fi
   # The pull may have changed this very script - continue in the new version.
   exec bash "$ROOT_DIR/install.sh" --finish-update
@@ -246,12 +211,14 @@ fi
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -e .
 note "Python-Abhängigkeiten installiert."
+migrate_user_data
 
 cfg_get() {
-  # cfg_get <dotted.key> <default> -> current value from config/config.yaml (defaults on re-runs)
+  # cfg_get <dotted.key> <default> -> current value (defaults + data/config.yaml, for re-runs)
   .venv/bin/python3 -c '
-import sys, yaml
-value = yaml.safe_load(open("config/config.yaml", encoding="utf-8"))
+import sys
+from app.config import load_config
+value = load_config()
 for key in sys.argv[1].split("."):
     value = value.get(key) if isinstance(value, dict) else None
 print(value if value not in (None, "") else sys.argv[2])
@@ -461,23 +428,23 @@ fi
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
-# 5. Write config/config.yaml
+# 5. Write data/config.yaml
 # ---------------------------------------------------------------------------
-info "Schreibe config/config.yaml"
+# Only the answers that differ from the defaults in config/config.yaml end up there.
+info "Schreibe data/config.yaml"
 .venv/bin/python3 - "$LLM_PROVIDER" "${OLLAMA_MODEL:-}" "${OLLAMA_HOST:-}" "${ANTHROPIC_MODEL:-claude-sonnet-5}" \
   "$MUSIC_PROVIDER" "${SPOTIFY_DEVICE_NAME:-open-home-fm}" "${LIBRARY_PATH:-data/library}" \
   "$AUDIO_OUTPUT_DEVICE" "$TTS_ENGINE" "$PIPER_BINARY" "$PIPER_VOICE_MODEL" \
   "$LOOP_INTERVAL" <<'PYEOF'
 import sys
-import yaml
-from pathlib import Path
+
+from app.config import load_config, save_config
 
 (llm_provider, ollama_model, ollama_host, anthropic_model,
  music_provider, spotify_device, library_path,
  audio_output, tts_engine, piper_binary, piper_voice_model, loop_interval) = sys.argv[1:]
 
-config_path = Path("config/config.yaml")
-config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+config = load_config()
 
 config["llm"]["provider"] = llm_provider
 config["llm"]["ollama"]["model"] = ollama_model or config["llm"]["ollama"]["model"]
@@ -496,8 +463,8 @@ config["tts"]["piper"]["voice_model"] = piper_voice_model
 
 config["agent"]["loop_interval_seconds"] = int(loop_interval)
 
-config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
-print("config/config.yaml aktualisiert.")
+save_config(config)
+print("data/config.yaml aktualisiert.")
 PYEOF
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,103 @@
+"""Moves settings out of tracked files into the gitignored user files (idempotent).
+
+Up to v0.1 the web UI wrote straight into the tracked `config/config.yaml` and
+`config/system_prompt.md`. If either is locally modified, its user values move to
+`data/config.yaml` (difference to the committed defaults) / `data/prompts/music.md`, then the
+tracked file is restored - so `git pull` works again. Runs from `install.sh` (update and full
+setup) and at app startup, for installations updated with a plain `git pull`.
+
+Run standalone with: .venv/bin/python -m app.migrate
+"""
+from __future__ import annotations
+
+import logging
+import subprocess
+from pathlib import Path
+
+import yaml
+
+from app import config as cfg
+
+logger = logging.getLogger(__name__)
+
+LEGACY_CONFIG = "config/config.yaml"
+LEGACY_PROMPT = "config/system_prompt.md"
+# Left behind by the old quick update as "the new default prompt, for comparison".
+LEGACY_PROMPT_COPY = "config/system_prompt.md.neu"
+CONFLICT_MARKERS = ("<<<<<<< ", ">>>>>>> ")
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+
+
+def _modified_vs_head(root: Path, relpath: str) -> str | None:
+    """The committed version of `relpath` if the working copy differs from it, else None."""
+    try:
+        diff = _git(root, "diff", "--quiet", "HEAD", "--", relpath)
+    except FileNotFoundError:  # no git at all - nothing to compare against
+        return None
+    if diff.returncode != 1 or not (root / relpath).exists():
+        return None
+    head = _git(root, "show", f"HEAD:{relpath}")
+    return head.stdout if head.returncode == 0 else None
+
+
+def _restore(root: Path, relpath: str) -> None:
+    result = _git(root, "checkout", "HEAD", "--", relpath)
+    if result.returncode != 0:
+        logger.warning("Could not restore %s: %s", relpath, result.stderr.strip())
+
+
+def migrate_config(root: Path) -> bool:
+    head_text = _modified_vs_head(root, LEGACY_CONFIG)
+    if head_text is None:
+        return False
+    local_text = (root / LEGACY_CONFIG).read_text(encoding="utf-8")
+    try:
+        defaults = yaml.safe_load(head_text) or {}
+        local = yaml.safe_load(local_text) or {}
+    except yaml.YAMLError:
+        logger.warning("%s is modified but not valid YAML (merge conflict?) - left untouched", LEGACY_CONFIG)
+        return False
+    if not isinstance(local, dict):
+        logger.warning("%s is modified but not a mapping - left untouched", LEGACY_CONFIG)
+        return False
+    # Values edited in the tracked file win over an existing user file: they're the newer
+    # change (e.g. a hand edit out of old habit after an earlier migration).
+    overrides = cfg.deep_merge(cfg.load_user_config(), cfg.config_diff(defaults, local))
+    cfg.write_user_config(overrides)
+    _restore(root, LEGACY_CONFIG)
+    logger.info("Moved local settings from %s to %s", LEGACY_CONFIG, cfg.USER_CONFIG_PATH)
+    return True
+
+
+def migrate_prompt(root: Path) -> bool:
+    if _modified_vs_head(root, LEGACY_PROMPT) is None:
+        return False
+    text = (root / LEGACY_PROMPT).read_text(encoding="utf-8")
+    if any(marker in text for marker in CONFLICT_MARKERS):
+        logger.warning("%s contains merge conflict markers - left untouched", LEGACY_PROMPT)
+        return False
+    cfg.save_system_prompt(text, desk="music")
+    _restore(root, LEGACY_PROMPT)
+    logger.info("Moved customized %s to %s", LEGACY_PROMPT, cfg.user_prompt_path("music"))
+    return True
+
+
+def migrate_user_data(root: Path | None = None) -> list[str]:
+    """Runs all migrations, returns the tracked files that were moved into user files."""
+    root = root or cfg.ROOT_DIR
+    moved = []
+    if migrate_config(root):
+        moved.append(LEGACY_CONFIG)
+    if migrate_prompt(root):
+        moved.append(LEGACY_PROMPT)
+    (root / LEGACY_PROMPT_COPY).unlink(missing_ok=True)
+    return moved
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    for path in migrate_user_data():
+        print(f"{path}: lokale Einstellungen nach data/ übernommen, Datei auf den Repo-Stand zurückgesetzt.")

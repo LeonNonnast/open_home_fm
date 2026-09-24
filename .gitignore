@@ -19,7 +19,18 @@ data/library/*
 !data/transcripts/.gitkeep
 !data/library/.gitkeep
 data/state.json
+# User settings (only the differences from config/config.yaml) + customized prompts.
+data/config.yaml
+data/prompts/
+# Runtime state of the upcoming queue/calls/news desks.
+data/queue.json
+data/player_cursor.json
+data/calls/
+data/music_wishes.json
+data/news_notes.json
+data/reserve.json
 *.onnx
 *.onnx.json
 models/
 config/system_prompt.md.neu
+.pytest_cache/

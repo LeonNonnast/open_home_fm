@@ -20,5 +20,17 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+# .venv/bin/pip install -e ".[dev]" && .venv/bin/pytest
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "shell: runs install.sh against throwaway git repos (needs git + bash)",
+]

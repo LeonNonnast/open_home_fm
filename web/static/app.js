@@ -140,39 +140,63 @@ function fillConfigFields(cfg) {
   $("raw-config").value = JSON.stringify(cfg, null, 2);
 }
 
-async function saveConfig(noteEl) {
+async function afterConfigSave(config, noteEl) {
+  currentConfig = config;
+  $("raw-config").value = JSON.stringify(config, null, 2);
+  renderDial(config);
+  refreshStatus();
+  note(noteEl, "Gespeichert – gilt ab dem nächsten Durchlauf.", "ok");
+}
+
+// Each card sends only its own fields (PATCH, deep-merged on the server), so saving one card
+// never overwrites what another card - or another browser tab - changed in the meantime.
+async function patchConfig(partial, noteEl) {
+  try {
+    await afterConfigSave(await api("/api/config", { method: "PATCH", ...jsonBody(partial) }), noteEl);
+  } catch (e) {
+    note(noteEl, "Speichern fehlgeschlagen (" + e.message + ").", "err");
+  }
+}
+
+function scheduleFields() {
+  return {
+    schedule: {
+      enabled: $("schedule-enabled").checked,
+      start_time: $("schedule-start").value || "06:00",
+      end_time: $("schedule-end").value || "23:00",
+    },
+  };
+}
+
+function agentFields() {
+  const provider = $("llm-provider").value;
+  return {
+    llm: { provider, [provider]: { model: $("llm-model").value } },
+    music: { provider: $("music-provider").value },
+    agent: { loop_interval_seconds: parseInt($("loop-interval").value, 10) || 1800 },
+  };
+}
+
+function voiceFields() {
+  const { text, ...piper } = voiceSettings();
+  return { tts: { piper } };
+}
+
+// "Erweitert" replaces the whole config with the JSON as shown (PUT) - keys removed there fall
+// back to their defaults.
+async function saveRawConfig(noteEl) {
   let updated;
   try {
     updated = JSON.parse($("raw-config").value);
   } catch (e) {
-    note(noteEl, "Das JSON unter „Erweitert“ ist ungültig: " + e.message, "err");
+    note(noteEl, "Ungültiges JSON: " + e.message, "err");
     return;
   }
-  const provider = $("llm-provider").value;
-  updated.llm = updated.llm || {};
-  updated.llm.provider = provider;
-  updated.llm[provider] = { ...(updated.llm[provider] || {}), model: $("llm-model").value };
-  updated.music = { ...(updated.music || {}), provider: $("music-provider").value };
-  updated.agent = { ...(updated.agent || {}), loop_interval_seconds: parseInt($("loop-interval").value, 10) || 1800 };
-  if ($("voice-model").value) {
-    updated.tts = updated.tts || {};
-    updated.tts.piper = { ...(updated.tts.piper || {}), ...voiceSettings() };
-    delete updated.tts.piper.text;
-  }
-  updated.schedule = {
-    ...(updated.schedule || {}),
-    enabled: $("schedule-enabled").checked,
-    start_time: $("schedule-start").value || "06:00",
-    end_time: $("schedule-end").value || "23:00",
-  };
-
   try {
     await api("/api/config", { method: "PUT", ...jsonBody(updated) });
-    currentConfig = updated;
-    fillConfigFields(updated);
-    renderDial(updated);
-    refreshStatus();
-    note(noteEl, "Gespeichert – gilt ab dem nächsten Durchlauf.", "ok");
+    const config = await api("/api/config");
+    fillConfigFields(config);
+    await afterConfigSave(config, noteEl);
   } catch (e) {
     note(noteEl, "Speichern fehlgeschlagen (" + e.message + ").", "err");
   }
@@ -398,8 +422,12 @@ function initVoice() {
     }
   });
 
-  $("save-voice").addEventListener("click", async () => {
-    await saveConfig($("voice-note"));
+  $("save-voice").addEventListener("click", () => {
+    if (!$("voice-model").value) {
+      note($("voice-note"), "Keine Stimme ausgewählt.", "err");
+      return;
+    }
+    patchConfig(voiceFields(), $("voice-note"));
   });
 
   $("voice-download").addEventListener("click", async () => {
@@ -422,6 +450,11 @@ function initVoice() {
   });
 }
 
+function renderPromptState(customized) {
+  $("prompt-meta").textContent = customized ? "Eigener Prompt · data/prompts/music.md" : "Standard · config/desks/music.md";
+  $("reset-prompt").hidden = !customized;
+}
+
 async function initStudio() {
   const [prompt, config] = await Promise.all([
     api("/api/config/system_prompt"),
@@ -429,6 +462,7 @@ async function initStudio() {
   ]);
   currentConfig = config;
   $("system-prompt").value = prompt.text;
+  renderPromptState(prompt.customized);
   fillConfigFields(config);
   renderDial(config);
 
@@ -438,16 +472,32 @@ async function initStudio() {
 
   $("save-prompt").addEventListener("click", async () => {
     try {
-      await api("/api/config/system_prompt", { method: "PUT", ...jsonBody({ text: $("system-prompt").value }) });
+      const { customized } = await api("/api/config/system_prompt", {
+        method: "PUT",
+        ...jsonBody({ text: $("system-prompt").value }),
+      });
+      renderPromptState(customized);
       note($("prompt-note"), "Gespeichert.", "ok");
     } catch (e) {
       note($("prompt-note"), "Speichern fehlgeschlagen (" + e.message + ").", "err");
     }
   });
 
-  $("save-schedule").addEventListener("click", () => saveConfig($("schedule-note")));
-  $("save-config").addEventListener("click", () => saveConfig($("config-note")));
-  $("save-raw").addEventListener("click", () => saveConfig($("raw-note")));
+  $("reset-prompt").addEventListener("click", async () => {
+    if (!confirm("Eigenen Prompt verwerfen und den Standard-Prompt wiederherstellen?")) return;
+    try {
+      const { text, customized } = await api("/api/config/system_prompt/reset", { method: "POST" });
+      $("system-prompt").value = text;
+      renderPromptState(customized);
+      note($("prompt-note"), "Standard wiederhergestellt.", "ok");
+    } catch (e) {
+      note($("prompt-note"), "Zurücksetzen fehlgeschlagen (" + e.message + ").", "err");
+    }
+  });
+
+  $("save-schedule").addEventListener("click", () => patchConfig(scheduleFields(), $("schedule-note")));
+  $("save-config").addEventListener("click", () => patchConfig(agentFields(), $("config-note")));
+  $("save-raw").addEventListener("click", () => saveRawConfig($("raw-note")));
   $("sync-raw").addEventListener("click", () => {
     try {
       fillConfigFields(JSON.parse($("raw-config").value));

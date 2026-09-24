@@ -8,7 +8,7 @@ Usage: .venv/bin/python scripts/setup_plugins.py [<plugin folder> ...]
   (e.g. `scripts/setup_plugins.py weather hue`).
 
 Enabled/disabled state goes to plugins.disabled, install() results to plugins.settings.<folder>
-in config/config.yaml, secrets set via PluginSetup.set_env to .env. See app/agent/plugin_setup.py
+in data/config.yaml (your settings), secrets set via PluginSetup.set_env to .env. See app/agent/plugin_setup.py
 for the install() contract.
 """
 import re

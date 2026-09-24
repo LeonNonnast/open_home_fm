@@ -1,8 +1,8 @@
-# open-home-fm main configuration.
-# Editable by hand or via the web UI (Settings page writes back to this file).
-#
-# Note: saving through the web UI/API rewrites this whole file via a plain YAML dump, which
-# does not preserve comments - they're documentation for hand-editing, not enforced at runtime.
+# open-home-fm default configuration.
+# Don't edit this file for your own settings: the web UI and installer store only the values you
+# change in data/config.yaml (gitignored), which is laid over these defaults at runtime. That
+# keeps updates conflict-free, and changed defaults reach every value you never touched.
+# To change something by hand, copy just that key (with its parent keys) into data/config.yaml.
 
 agent:
   # How often the agent loop wakes up and processes the inbox / builds the next script. Each
