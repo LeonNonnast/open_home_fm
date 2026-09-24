@@ -69,6 +69,11 @@ desks:
     # Plugin tools it may use: direct actions (lights) and lookups (cached for 10 min).
     plugins: [control_hue_lights, get_weather, get_news_headlines, get_favorite_songs]
 
+station:
+  # true = stopped via the Stop button in the web UI: nothing plays and no desk runs (the
+  # schedule included) until Play is pressed again. Survives restarts.
+  stopped: false
+
 schedule:
   # false (default) = always on air. true restricts generation + playback to the daily window
   # below (editable via the web UI). An end_time earlier than start_time spans midnight.

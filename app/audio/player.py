@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.agent.play_history import record_played
-from app.config import is_broadcast_time, load_config
+from app.config import is_broadcast_time, is_stopped, load_config
 from app.music.base import MusicProvider, Track
 from app.program.filler import FillerSource
 from app.program.queue import AHEAD_OF_PROGRAM, ProgramQueue, QueueItem, Segment
@@ -98,6 +98,7 @@ class QueuePlayer:
         self._breaker_trips = 0
         self._breaker_active = False  # tripped, and no segment played properly since
         self._was_on_air: bool | None = None
+        self._was_stopped = False
         # Called with (item, "playing" | "played") when an item starts/ends on air - the calls
         # use it to show "läuft jetzt"/"gesendet 07:14" (app/program/calls.py). Must not raise.
         self.on_item_event: Callable[[QueueItem, str], None] | None = None
@@ -129,6 +130,17 @@ class QueuePlayer:
                 return False
             self._skip_event.set()
         self._log_line("Überspringen angefordert")
+        return True
+
+    def halt(self) -> bool:
+        """Cuts the segment on air right away - called once `station.stopped` is saved. The loop
+        then stays stopped (see _step) and silences the provider; False when nothing was playing."""
+        # Under the segment-boundary lock like skip(); a segment that starts after this sees the
+        # stop flag in _play_segment and doesn't start at all.
+        with self._state_lock:
+            if self._current is None:
+                return False
+            self._skip_event.set()
         return True
 
     def breaker_active(self) -> bool:
@@ -241,17 +253,27 @@ class QueuePlayer:
 
     def _step(self) -> None:
         config = load_config()
-        on_air = is_broadcast_time(config)
-        if on_air != self._was_on_air:
-            if not on_air:
-                # Blocks from 23:00 must not play at 06:00 with the wrong time references.
-                expired = self.queue.expire_lanes(("program", "filler"), "Sendeschluss")
-                self._log_line(f"Sendeschluss{f', {expired} Beiträge verfallen' if expired else ''}")
-            elif self._was_on_air is False:
-                self._log_line("Sendebeginn")
-            self._was_on_air = on_air
+        stopped = is_stopped(config)
+        on_air = is_broadcast_time(config)  # never while stopped
+        if on_air != self._was_on_air or stopped != self._was_stopped:
+            reason = "Sender gestoppt" if stopped else "Sendeschluss"
+            if not on_air and self._was_on_air is not False:
+                # Blocks from 23:00 must not play at 06:00 with the wrong time references - the
+                # same after a stop: Play starts with a fresh plan.
+                expired = self.queue.expire_lanes(("program", "filler"), reason)
+                self._log_line(f"{reason}{f', {expired} Beiträge verfallen' if expired else ''}")
+            elif stopped and not self._was_stopped:
+                self._log_line(reason)  # stopped during the Sendepause
+            elif on_air and self._was_on_air is False:
+                self._log_line("Sender gestartet" if self._was_stopped else "Sendebeginn")
+            if stopped and not self._was_stopped:
+                try:
+                    self.provider.stop()  # also silences whatever the source still plays
+                except Exception:
+                    logger.warning("Could not stop the music provider", exc_info=True)
+            self._was_on_air, self._was_stopped = on_air, stopped
         if not on_air:
-            self._set_mode("off_air")
+            self._set_mode("stopped" if stopped else "off_air")
             self._stop_event.wait(self.idle_poll_seconds)
             return
 
@@ -304,22 +326,29 @@ class QueuePlayer:
             return None
         started = time.time()
         with self._state_lock:
-            # Cleared together with setting _current (see skip()); a pending stop still wins.
-            self._skip_event.clear()
-            if self._stop_event.is_set():
-                self._skip_event.set()
-            self._current = {
-                "item_id": item.id,
-                "lane": item.lane,
-                "desk": item.desk,
-                "segment_index": index,
-                "segment_count": len(item.segments),
-                "type": segment.type,
-                "title": segment.title,
-                "text": segment.text,
-                "duration": segment.duration_seconds,
-                "_started": started,
-            }
+            # Stopped since next_item(): checked under the lock halt() takes, so either halt()
+            # sees this segment and cuts it, or the segment sees the flag and doesn't start.
+            halted = is_stopped(load_config())
+            if not halted:
+                # Cleared together with setting _current (see skip()); a pending stop still wins.
+                self._skip_event.clear()
+                if self._stop_event.is_set():
+                    self._skip_event.set()
+                self._current = {
+                    "item_id": item.id,
+                    "lane": item.lane,
+                    "desk": item.desk,
+                    "segment_index": index,
+                    "segment_count": len(item.segments),
+                    "type": segment.type,
+                    "title": segment.title,
+                    "text": segment.text,
+                    "duration": segment.duration_seconds,
+                    "_started": started,
+                }
+        if halted:
+            self.queue.rewind(item.id, index)
+            return None
         if item.lane == "news":
             self._log_line(self._news_line(item))
         else:
@@ -357,6 +386,12 @@ class QueuePlayer:
                 self._current = None
 
         if stopped and not self._stop_event.is_set():
+            if is_stopped(load_config()):
+                # Cut by the Stop button: not consumed (a reply/news item plays it again after
+                # Play; program and filler expire anyway) and no failure for the circuit breaker.
+                self._log_line(f"abgebrochen (Sender gestoppt): {segment.title}")
+                self.queue.rewind(item.id, index)
+                return None
             self._log_line(f"übersprungen: {segment.title}")
         return elapsed, stopped, error
 

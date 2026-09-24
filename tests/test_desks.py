@@ -146,3 +146,35 @@ def test_bad_stored_desk_settings_fall_back_to_defaults(runner):
     cfg.write_user_config({"desks": {"music": {"fill_threshold_minutes": 50, "max_queued_program_minutes": 20}}})
     s = DeskConfig.from_config("music", cfg.load_config()).settings
     assert s["fill_threshold_minutes"] < s["max_queued_program_minutes"]
+
+
+def test_nothing_runs_while_stopped(runner):
+    cfg.set_stopped(True)
+    scheduler = DeskScheduler(runner)
+    scheduler.watch()
+    scheduler.heartbeat()
+    for name in ("music", "news", "dispatch"):
+        result = scheduler.request_run(name, "manual", force=True)
+        assert result["status"] == "skipped" and "Sender gestoppt" in result["reason"]
+    runner.calls.create("Spiel mal Queen")
+    scheduler.watch_calls()
+    assert not runner.started.wait(0.3) and runner.runs == []
+    assert scheduler.desk_status("music")["next_trigger"].startswith("Sender gestoppt")
+
+    # Play: the next watcher tick starts the music desk like a broadcast start.
+    cfg.set_stopped(False)
+    runner.release.set()
+    scheduler.watch()
+    assert runner.wait_idle("music", 5)
+    assert runner.runs == ["broadcast_start"]
+
+
+def test_stop_cancels_a_queued_followup(runner):
+    scheduler = DeskScheduler(runner)
+    scheduler.watch()
+    assert runner.started.wait(2)
+    assert scheduler.request_run("music", "manual", force=True)["status"] == "queued"
+    cfg.set_stopped(True)
+    runner.release.set()
+    assert runner.wait_idle("music", 5)
+    assert runner.runs == ["fill"]

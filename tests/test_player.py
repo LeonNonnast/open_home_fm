@@ -265,3 +265,52 @@ def test_skip_between_segments_does_not_hit_the_next_one(config_env, queue):
         assert provider.playing.is_set() and player.status()["current"]["title"] == "b"
     finally:
         player.stop()
+
+
+def test_halt_cuts_the_segment_and_nothing_starts_until_play(config_env, queue):
+    provider = FakeMusicProvider(block=True)
+    reply = queue.append(QueueItem.new("reply", "dispatch", [Segment("track", "r", "u:r", duration_seconds=200)]))
+    block = queue.append(_block("a", "b"))
+    player = _player(config_env, provider, queue)
+    player.start()
+    try:
+        assert wait_for(lambda: provider.playing.is_set())
+        assert player.status()["current"]["title"] == "r"
+        cfg.set_stopped(True)  # like POST /api/player/stop: flag first, then halt()
+        assert player.halt()
+        assert wait_for(lambda: player.status()["mode"] == "stopped")
+        time.sleep(0.3)
+        assert [t.title for t in provider.played] == ["r"] and player.status()["current"] is None
+        assert player.status()["mode_text"] == "gestoppt"
+        log = player.status()["log"]
+        assert any("abgebrochen (Sender gestoppt): r" in line for line in log)
+        assert not any("übersprungen" in line or "Schutzschalter" in line for line in log)
+        assert any("Sender gestoppt, 1 Beiträge verfallen" in line for line in log)
+        # The cut reply segment isn't consumed, the program block expired (fresh plan after Play).
+        assert queue.get(reply.id).next_segment == 0 and queue.get(block.id).status == "expired"
+        assert not player.halt()  # nothing on air any more
+
+        cfg.set_stopped(False)
+        assert wait_for(lambda: len(provider.played) == 2 and provider.playing.is_set())
+        assert player.status()["current"]["title"] == "r"
+        assert any("Sender gestartet" in line for line in player.status()["log"])
+    finally:
+        player.stop()
+
+
+def test_segment_picked_before_a_stop_does_not_start(config_env, queue, monkeypatch):
+    # The stop lands between next_item() and the segment start: halt() found nothing to cut.
+    provider = FakeMusicProvider(block=True)
+    block = queue.append(_block("a"))
+    player = _player(config_env, provider, queue)
+    original = queue.start_segment
+
+    def start_then_stop(item_id, index):
+        cfg.set_stopped(True)
+        return original(item_id, index)
+
+    monkeypatch.setattr(queue, "start_segment", start_then_stop)
+    player._was_on_air = True
+    player._step()
+    assert provider.played == [] and player.status()["current"] is None
+    assert queue.get(block.id).next_segment == 0

@@ -255,13 +255,13 @@ function tickClock() {
   if (el) el.textContent = fmtDateTime(new Date());
 }
 
-function renderLamp(onAir) {
+function renderLamp(onAir, stopped) {
   const lamp = $("lamp");
   if (!lamp) return;
-  const state = onAir ? "on" : "off";
+  const state = onAir ? "on" : stopped ? "stopped" : "off";
   if (lamp.dataset.state === state) return; // don't re-announce an unchanged status
   lamp.dataset.state = state;
-  $("lamp-label").textContent = onAir ? "On Air" : "Sendepause";
+  $("lamp-label").textContent = onAir ? "On Air" : stopped ? "Gestoppt" : "Sendepause";
 }
 
 const dismissedNotices = new Set();
@@ -320,7 +320,7 @@ const Status = {
     }
     this.data = data;
     this.receivedAt = Date.now();
-    renderLamp(data.on_air);
+    renderLamp(data.on_air, data.stopped);
     renderNotices(data.notices);
     for (const fn of this.listeners) {
       try { fn(data); } catch (e) { console.error(e); }

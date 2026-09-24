@@ -16,6 +16,9 @@ Dispatch desk: right away for every new call (the calls API asks), plus a watche
 that syncs the calls with the queue, expires calls nobody could handle and re-requests a run
 while calls are open (which also retries after an LLM failure, gated by the desk's backoff of
 10 s / 30 s / 1 min). It ignores the broadcast window.
+While the station is stopped (Stop button, `station.stopped`) no desk runs at all - the
+dispatch desk included; calls wait (or expire) until Play. Play starts the music desk right away
+like a broadcast start.
 Every trigger respects the broadcast window and `max_queued_program_minutes` - neither the
 watcher nor "run now" stacks the queue beyond that. Locking, follow-up runs and backoff are
 the DeskRunner's job (app/agent/desk.py).
@@ -28,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.agent.desk import DESK_LABELS, DESKS, DeskConfig, DeskRunner
-from app.config import is_broadcast_time, load_config
+from app.config import is_broadcast_time, is_stopped, load_config
 from app.program.calls import STUCK_PROCESSING_MINUTES
 from app.program.news import FORMAT_LABELS, cron_minutes, next_slot, normalize_slots
 
@@ -37,6 +40,7 @@ logger = logging.getLogger(__name__)
 WATCH_SECONDS = 30
 HEARTBEAT_MINUTES = 60
 CALLS_WATCH_SECONDS = 10
+STOPPED_REASON = "Sender gestoppt – erst Play startet die Redaktionen wieder."
 
 
 class DeskScheduler:
@@ -44,14 +48,16 @@ class DeskScheduler:
         self.runner = runner
         self._scheduler = BackgroundScheduler()
         self._heartbeat_job = None
+        self._watch_job = None
         self._was_on_air: bool | None = None
+        self._was_stopped = False
         self._news_jobs: list = []
         self._news_signature: tuple | None = None
 
     def start(self) -> None:
         # next_run_time=None would add the job *paused* in APScheduler 3.x - check right away.
-        self._scheduler.add_job(self.watch, "interval", seconds=WATCH_SECONDS, next_run_time=datetime.now(),
-                                max_instances=1, coalesce=True)
+        self._watch_job = self._scheduler.add_job(self.watch, "interval", seconds=WATCH_SECONDS,
+                                                  next_run_time=datetime.now(), max_instances=1, coalesce=True)
         self._heartbeat_job = self._scheduler.add_job(self.heartbeat, "interval", minutes=HEARTBEAT_MINUTES,
                                                       max_instances=1, coalesce=True)
         self._scheduler.add_job(self.watch_calls, "interval", seconds=CALLS_WATCH_SECONDS,
@@ -63,6 +69,14 @@ class DeskScheduler:
 
     def stop(self) -> None:
         self._scheduler.shutdown(wait=False)
+
+    def wake(self) -> None:
+        """Runs the fill watcher now instead of in up to 30 s (Play: the music desk starts at once)."""
+        try:
+            if self._watch_job is not None:
+                self._watch_job.modify(next_run_time=datetime.now())
+        except Exception:
+            logger.warning("Could not wake the fill watcher", exc_info=True)
 
     # ---------- music desk conditions ----------
 
@@ -151,6 +165,8 @@ class DeskScheduler:
         """Runs desk `name` through its lock; for the API and all timed triggers."""
         if name not in DESKS:
             raise KeyError(name)
+        if is_stopped(load_config()):
+            return {"status": "skipped", "reason": STOPPED_REASON}
         if name == "music":
             if not is_broadcast_time(load_config()):
                 return {"status": "skipped", "reason": "Sendepause – die Musikredaktion plant erst zum Sendebeginn."}
@@ -168,7 +184,7 @@ class DeskScheduler:
             condition = self.runner.calls.has_pending
         else:
             condition = None
-        status = self.runner.request(name, trigger, condition=condition, force=force)
+        status = self.runner.request(name, trigger, condition=self._unless_stopped(condition), force=force)
         reasons = {
             "queued": "läuft gerade – ein weiterer Durchlauf ist vorgemerkt",
             "backoff": "nach Fehlern kurz pausiert",
@@ -176,16 +192,22 @@ class DeskScheduler:
         }
         return {"status": status, "reason": reasons.get(status)}
 
+    @staticmethod
+    def _unless_stopped(condition):
+        """Re-checked right before the run and a queued follow-up: a Stop meanwhile cancels them."""
+        return lambda: not is_stopped(load_config()) and (condition is None or condition())
+
     def watch(self) -> None:
         self.watch_news()  # also outside the broadcast window: a slot at its start is prepared before
         try:
             config = load_config()
-            on_air = is_broadcast_time(config)
+            on_air = is_broadcast_time(config)  # never while stopped
             was_on_air, self._was_on_air = self._was_on_air, on_air
+            was_stopped, self._was_stopped = self._was_stopped, is_stopped(config)
             if not on_air:
                 return
             if was_on_air is False:
-                logger.info("Broadcast start - music desk runs right away")
+                logger.info("%s - music desk runs right away", "Sender gestartet" if was_stopped else "Broadcast start")
                 self.request_run("music", "broadcast_start")
                 return
             player = self.runner.player
@@ -213,8 +235,10 @@ class DeskScheduler:
                 # Left `processing` by an error nobody caught - back to the dispatch desk.
                 calls.recover_processing(older_than_minutes=STUCK_PROCESSING_MINUTES)
             calls.sync()
+            if is_stopped(load_config()):
+                return  # calls wait for Play (or expire above)
             if calls.has_pending() and not self.runner.is_running("dispatch"):
-                self.runner.request("dispatch", "poll", condition=calls.has_pending)
+                self.runner.request("dispatch", "poll", condition=self._unless_stopped(calls.has_pending))
         except Exception:
             logger.exception("Calls watcher failed")
 
@@ -279,6 +303,9 @@ class DeskScheduler:
             data["next_trigger"] = (
                 "nächster Versuch nach Fehler" if status["backoff_until"] else "sofort bei jedem Zwischenruf"
             )
+        if is_stopped(config):
+            data["next_trigger_at"] = None
+            data["next_trigger"] = "Sender gestoppt – erst nach Play"
         return data
 
     def desks_status(self) -> list[dict]:

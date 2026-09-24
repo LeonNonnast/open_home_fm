@@ -1,10 +1,12 @@
-"""The program queue and the player: what's coming up, remove/undo, skip the current song."""
+"""The program queue and the player: what's coming up, remove/undo, skip the current song,
+stop/play the whole station."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.config import is_stopped, load_config, set_stopped
 from app.program.queue import ACTIVE_STATUSES, ProgramQueue, QueueItem
 
 router = APIRouter(prefix="/api/queue", tags=["queue"])
@@ -84,3 +86,25 @@ def restore_item(item_id: str, request: Request) -> dict:
 @player_router.post("/skip")
 def skip(request: Request) -> dict:
     return {"skipped": request.app.state.player.skip()}
+
+
+def _station_state(request: Request) -> dict:
+    status = request.app.state.player.status()
+    return {"stopped": is_stopped(load_config()), "mode": status["mode"], "mode_text": status["mode_text"]}
+
+
+@player_router.post("/stop")
+def stop_station(request: Request) -> dict:
+    """Stops everything until /play: the segment on air is cut right away, no desk runs."""
+    set_stopped(True)  # saved first: the player loop checks it before starting any new segment
+    request.app.state.player.halt()
+    return _station_state(request)
+
+
+@player_router.post("/play")
+def play_station(request: Request) -> dict:
+    set_stopped(False)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None:
+        scheduler.wake()  # the music desk plans right away, not only at the next watcher tick
+    return _station_state(request)

@@ -165,3 +165,23 @@ def test_news_patch_checks_max_delay_and_drops_bulletins_of_removed_slots(client
     assert notes.get(note["id"])["status"] == "noted"
     assert client.patch("/api/desks/news", json={"enabled": False}).status_code == 200
     assert queue.get(kept.id).status == "expired"
+
+
+def test_stop_and_play_the_station(client):
+    assert wait_for(lambda: client.get("/api/status").json()["now_playing"] is not None)
+    stopped = client.post("/api/player/stop").json()
+    assert stopped["stopped"] is True
+    assert wait_for(lambda: client.get("/api/status").json()["player"]["mode"] == "stopped")
+    status = client.get("/api/status").json()
+    assert status["stopped"] and not status["on_air"] and status["now_playing"] is None
+    assert status["next_on_air_at"] is None
+    assert client.post("/api/desks/music/run").json()["reason"].startswith("Sender gestoppt")
+
+    played = len(client.player_provider.played)
+    time.sleep(0.3)
+    assert len(client.player_provider.played) == played  # nothing starts while stopped
+
+    assert client.post("/api/player/play").json()["stopped"] is False
+    assert wait_for(lambda: client.get("/api/status").json()["now_playing"] is not None)
+    status = client.get("/api/status").json()
+    assert status["on_air"] and not status["stopped"]

@@ -75,6 +75,7 @@
       ? ""
       : remaining > 0
         ? `Programm bis ~${hhmm(new Date(Date.now() + remaining * 1000))}`
+        : status.stopped ? "Sender gestoppt"
         : status.on_air ? "Kein Programm geplant" : status.next_on_air_at ? `Sendebeginn ${fmtWhen(status.next_on_air_at)}` : "";
     const news = status?.desks?.news;
     const cap = $("dial-news");
@@ -92,7 +93,7 @@
   // Upcoming news slots within `hours` (and the broadcast window), from the desk's settings.
   function newsSlots(status, now, hours) {
     const news = status?.desks?.news;
-    if (!news || news.enabled === false || !news.slots?.length) return [];
+    if (!news || news.enabled === false || !news.slots?.length || status.stopped) return [];
     const schedule = config.schedule || {};
     const inWindow = (d) => {
       if (!schedule.enabled) return true;
@@ -154,10 +155,11 @@
     if (!status.on_air && !np) {
       display.dataset.state = "off";
       $("now-chips").innerHTML = "";
-      $("now-title").textContent = "Sendepause";
+      $("now-title").textContent = status.stopped ? "Sender gestoppt" : "Sendepause";
       $("now-text").hidden = true;
       $("progress-wrap").hidden = true;
-      setStateLine(status.next_on_air_at ? `Sender ruht bis ${fmtWhen(status.next_on_air_at)}` : "Sender ruht");
+      if (status.stopped) setStateLine("Nichts läuft – Play startet die Sendung wieder.");
+      else setStateLine(status.next_on_air_at ? `Sender ruht bis ${fmtWhen(status.next_on_air_at)}` : "Sender ruht");
     } else if (!np) {
       display.dataset.state = "idle";
       $("now-chips").innerHTML = "";
@@ -177,7 +179,8 @@
       $("now-text").hidden = !(isJingle && np.text);
       $("now-text").textContent = isJingle ? plain(np.text) : "";
       $("progress-wrap").hidden = false;
-      if (!status.on_air) setStateLine("Sendeschluss – dieser Beitrag läuft noch aus.", "warn");
+      if (status.stopped) setStateLine("Sender gestoppt – wird gerade angehalten…", "warn");
+      else if (!status.on_air) setStateLine("Sendeschluss – dieser Beitrag läuft noch aus.", "warn");
       else if (player.mode === "paused") setStateLine(player.mode_text, "crit");
       else if (np.lane === "filler") {
         setStateLine(`${player.mode_text || "Füllprogramm"} · die Musikredaktion ${planning ? "plant gerade" : "plant nach"}`, "warn");
@@ -185,8 +188,9 @@
       progressTick();
     }
 
+    renderToggle(status);
     const skip = $("skip");
-    skip.disabled = !np;
+    skip.disabled = !np || status.stopped;
     skip.textContent = np?.type === "jingle" ? "Ansage überspringen" : "Song überspringen";
 
     // A new segment on air shifts the "Als Nächstes" list.
@@ -275,7 +279,8 @@
     const planning = status?.desks?.music?.state === "running";
     const threshold = status?.desks?.music?.fill?.threshold_minutes;
     let empty;
-    if (status && !status.on_air) empty = "Sendepause – geplant wird wieder ab Sendebeginn.";
+    if (status?.stopped) empty = "Sender gestoppt – geplant wird erst wieder nach Play.";
+    else if (status && !status.on_air) empty = "Sendepause – geplant wird wieder ab Sendebeginn.";
     else if (planning) empty = "Musikredaktion plant…";
     else if (status?.desks?.music?.state === "error") {
       const retry = status.desks.music.backoff_until;
@@ -363,7 +368,39 @@
     }, 1000);
   }
 
+  // Stop/Play for the whole station: stopped, nothing plays and no desk runs until Play.
+  let toggleBusy = false;
+
+  function renderToggle(status) {
+    const btn = $("station-toggle");
+    const stopped = !!status.stopped;
+    btn.disabled = toggleBusy;
+    btn.textContent = stopped ? "▶ Play" : "■ Stopp";
+    btn.title = stopped ? "Sender wieder starten" : "Sender anhalten – nichts läuft, bis du wieder Play drückst";
+    btn.classList.toggle("signal", stopped);
+    btn.classList.toggle("ghost", !stopped);
+    btn.setAttribute("aria-pressed", String(stopped));
+  }
+
   function initActions() {
+    $("station-toggle").addEventListener("click", async () => {
+      const stopped = !!Status.data?.stopped;
+      if (!stopped && !confirm("Sender stoppen? Der laufende Titel bricht ab, und nichts läuft mehr, bis du wieder Play drückst.")) return;
+      toggleBusy = true;
+      $("station-toggle").disabled = true;
+      try {
+        await api(stopped ? "/api/player/play" : "/api/player/stop", { method: "POST" });
+        note($("skip-note"), stopped ? "Sender läuft wieder." : "Sender gestoppt.", "ok");
+      } catch (e) {
+        note($("skip-note"), (stopped ? "Starten" : "Stoppen") + " fehlgeschlagen (" + e.message + ").", "err");
+      }
+      toggleBusy = false;
+      // The player needs a moment to cut the segment / pick the first one.
+      await Status.refresh();
+      setTimeout(() => Status.refresh(), 1500);
+    });
+
+
     $("skip").addEventListener("click", async () => {
       const np = Status.data?.now_playing;
       if (!np) return;

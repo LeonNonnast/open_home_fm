@@ -542,9 +542,10 @@ per `PATCH` nur ihre Felder.
 
 | Methode & Pfad | Zweck |
 |---|---|
-| `GET /api/status` | schlank: `on_air`, `next_on_air_at`, `now_playing{…, position, duration, lane, mode, mode_text}`, `desks` (Kurzstatus), `interrupt_available_at`, `notices`, `server_time` |
+| `GET /api/status` | schlank: `on_air`, `stopped`, `next_on_air_at`, `now_playing{…, position, duration, lane, mode, mode_text}`, `desks` (Kurzstatus), `interrupt_available_at`, `notices`, `server_time` |
 | `GET /api/queue` · `DELETE /api/queue/{id}` · `POST /api/queue/{id}/restore` | Warteschlange · entfernen · Rückgängig |
 | `POST /api/player/skip` | aktuellen Song überspringen |
+| `POST /api/player/stop` · `POST /api/player/play` | ganzen Sender stoppen (laufendes Segment bricht ab, keine Redaktion läuft, `station.stopped`, übersteht Neustarts) · wieder starten |
 | `GET /api/desks` · `PATCH /api/desks/{name}` | Status + Einstellungen je Redaktion |
 | `GET/PUT /api/desks/{name}/prompt` · `POST …/prompt/reset` | Prompt je Redaktion |
 | `POST /api/desks/{name}/run` | Redaktion jetzt ausführen (über Scheduler/Lock) |

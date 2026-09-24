@@ -587,7 +587,10 @@
     let label = "läuft gerade";
     let title;
     if (np) title = np.type === "jingle" ? `Moderation${np.text ? `: ${plain(np.text)}` : ""}` : np.title;
-    else if (!status.on_air) {
+    else if (status.stopped) {
+      label = "";
+      title = "Sender gestoppt";
+    } else if (!status.on_air) {
       label = "";
       title = status.next_on_air_at ? `Sender ruht bis ${fmtWhen(status.next_on_air_at)}` : "Sender ruht";
     } else title = "Gleich geht’s weiter";
@@ -606,7 +609,9 @@
     const interrupt = listMeta.interrupt_available_at || status?.interrupt_available_at;
     const parts = [];
     if (dispatch && dispatch.enabled === false) parts.push("Die Leitstelle ist gerade ausgeschaltet – Zwischenrufe bleiben liegen, bis sie wieder an ist.");
-    if (status && !status.on_air) {
+    if (status?.stopped) {
+      parts.push("Sender gestoppt – Zwischenrufe bleiben liegen, bis auf der Sendung-Seite wieder Play gedrückt wird.");
+    } else if (status && !status.on_air) {
       parts.push(`Sender ruht${status.next_on_air_at ? ` bis ${fmtWhen(status.next_on_air_at)}` : ""} – Licht & Co. gehen sofort, alles fürs Programm kommt dann dran.`);
     }
     if (interrupt && new Date(interrupt).getTime() > serverNow()) parts.push(`Unterbrechen erst wieder ab ${fmtWhen(interrupt)} möglich.`);

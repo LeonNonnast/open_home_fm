@@ -117,3 +117,30 @@ def test_system_prompt_api(config_env):
     assert client.get("/api/config/system_prompt").json() == {"text": "Neu", "customized": True}
     assert client.post("/api/config/system_prompt/reset").json() == {"text": DEFAULT_PROMPT, "customized": False}
     assert not cfg.user_prompt_path().exists()
+
+
+def test_stopped_station_is_never_on_air_and_has_no_scheduled_start(config_env):
+    from datetime import datetime
+
+    config = cfg.load_config()
+    assert not cfg.is_stopped(config) and cfg.is_broadcast_time(config)
+    cfg.set_stopped(True)
+    config = cfg.load_config()
+    assert cfg.is_stopped(config) and cfg.load_user_config() == {"station": {"stopped": True}}
+    assert not cfg.is_broadcast_time(config)
+    assert cfg.next_broadcast_start(config) is None
+    # Also with a schedule: only Play starts the station again, not the next window.
+    config["schedule"].update(enabled=True, start_time="06:00", end_time="23:00")
+    noon, night = datetime(2026, 1, 1, 12, 0), datetime(2026, 1, 1, 2, 0)
+    assert not cfg.is_broadcast_time(config, noon) and cfg.next_broadcast_start(config, night) is None
+    cfg.set_stopped(False)
+    assert not cfg.is_stopped(cfg.load_config()) and cfg.is_broadcast_time(cfg.load_config())
+
+
+def test_config_saves_keep_the_stop_state(config_env):
+    client, _ = _client()
+    stale = client.get("/api/config").json()
+    cfg.set_stopped(True)
+    assert client.put("/api/config", json=stale).json()["status"] == "ok"
+    assert cfg.is_stopped(cfg.load_config())
+    assert client.patch("/api/config", json={"station": {"stopped": False}}).json()["station"]["stopped"] is True

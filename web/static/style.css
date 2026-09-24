@@ -144,6 +144,8 @@ body {
   border: 2px solid var(--muted);
 }
 .lamp[data-state="on"] { color: var(--ink); }
+.lamp[data-state="stopped"] { color: var(--crit); }
+.lamp[data-state="stopped"] .dot { border-radius: 2px; background: var(--crit); border-color: var(--crit); }
 .lamp[data-state="on"] .dot {
   background: var(--signal);
   border-color: var(--signal);
@@ -445,6 +447,7 @@ h2 {
   margin-top: 18px;
 }
 .display .note { color: var(--display-muted); }
+.station-toggle { min-width: 7.5em; }
 .display .note.err { color: #ff8a7a; }
 
 /* "Als Nächstes" */

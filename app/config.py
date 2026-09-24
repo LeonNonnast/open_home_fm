@@ -183,13 +183,25 @@ def _parse_hhmm(value: str) -> dtime:
     return datetime.strptime(value, "%H:%M").time()
 
 
+def is_stopped(config: dict[str, Any]) -> bool:
+    """The Stop button in the UI (`station.stopped`): nothing plays and no desk runs until Play."""
+    return bool((config.get("station") or {}).get("stopped", False))
+
+
+def set_stopped(stopped: bool) -> dict[str, Any]:
+    return update_config({"station": {"stopped": bool(stopped)}})
+
+
 def is_broadcast_time(config: dict[str, Any], now: datetime | None = None) -> bool:
     """Whether the station should currently be generating/playing a program.
 
+    Never while the station is stopped (`is_stopped`), whatever the schedule says.
     `schedule.enabled: false` (the default) means "always on air". When enabled, `start_time`/
     `end_time` ("HH:MM") define a daily window; an end time earlier than the start time is
     treated as spanning midnight (e.g. 22:00-06:00).
     """
+    if is_stopped(config):
+        return False
     schedule = config.get("schedule", {})
     if not schedule.get("enabled", False):
         return True
@@ -204,9 +216,10 @@ def is_broadcast_time(config: dict[str, Any], now: datetime | None = None) -> bo
 
 
 def next_broadcast_start(config: dict[str, Any], now: datetime | None = None) -> datetime | None:
-    """When the station goes on air next (local time); None while on air or always on air."""
+    """When the station goes on air next (local time); None while on air, always on air or
+    stopped (only Play starts a stopped station again - there's no scheduled restart)."""
     now = now or datetime.now()
-    if is_broadcast_time(config, now):
+    if is_stopped(config) or is_broadcast_time(config, now):
         return None
     start = _parse_hhmm(config.get("schedule", {}).get("start_time", "00:00"))
     candidate = datetime.combine(now.date(), start)

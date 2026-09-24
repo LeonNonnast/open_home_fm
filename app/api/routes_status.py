@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.config import is_broadcast_time, load_config, next_broadcast_start
+from app.config import is_broadcast_time, is_stopped, load_config, next_broadcast_start
 
 router = APIRouter(prefix="/api/status", tags=["status"])
 notices_router = APIRouter(prefix="/api/notices", tags=["notices"])
@@ -37,7 +37,8 @@ def get_status(request: Request) -> dict:
             "next_slot_at", "next_slot_format", "prepare_at", "prepared", "last_bulletin", "open_notes", "slots",
         )}
     return {
-        "on_air": is_broadcast_time(config),
+        "on_air": is_broadcast_time(config),  # false while stopped
+        "stopped": is_stopped(config),
         "next_on_air_at": next_start.astimezone().isoformat() if next_start else None,
         "now_playing": now_playing,
         "player": {k: player_status[k] for k in ("mode", "mode_text", "log")},
