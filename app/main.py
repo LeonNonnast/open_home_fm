@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.desk import DeskRunner
-from app.api.routes_calls import notes_router, router as calls_router, wishes_router
+from app.api.routes_calls import notes_router, resume_transcriptions, router as calls_router, wishes_router
 from app.api.routes_config import router as config_router
 from app.api.routes_desks import router as desks_router
 from app.api.routes_inbox import router as inbox_router
@@ -88,6 +88,7 @@ async def lifespan(app: FastAPI):
     app.state.calls = runner.calls
     app.state.notices = notices
     app.state.stt_engine = create_stt_engine(config)
+    resume_transcriptions(runner.calls, app.state.stt_engine)
 
     player.start()
     scheduler.start()

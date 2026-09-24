@@ -35,6 +35,8 @@ DOWNGRADED = "Unterbrechen kommt später"
 DOWNGRADED_OFF = "Unterbrechen ist ausgeschaltet"
 # Songs/episodes one call may put on air - a runaway model must not queue an album.
 MAX_PLAYS_PER_CALL = 3
+# Episodes run 30-120 min and hold back the whole program: one per call.
+MAX_EPISODES_PER_CALL = 1
 MAX_VALID_DAYS = 14
 # Lookup plugins (weather, news) are cached this long - the dispatch desk has to be quick.
 INFO_CACHE_SECONDS = 600
@@ -118,6 +120,8 @@ class DispatchSession:
         self.staged: list[Staged] = []
         # Direct actions already executed - also those of an earlier, failed attempt of this call.
         self.done: list[dict[str, Any]] = [a for a in call.get("actions") or [] if a.get("type") == "plugin"]
+        # Called with `done` after every direct action (the desk saves it on the call at once).
+        self.on_done: Callable[[list[dict[str, Any]]], Any] | None = None
 
     # ---------- helpers ----------
 
@@ -152,6 +156,9 @@ class DispatchSession:
         if self.provider is None:
             return f"Die Musikquelle ist gerade nicht erreichbar ({self.provider_error}). Sag das dem Hörer mit reply."
         if episode_query:
+            if sum(1 for s in self._plays() if s.segment.type == "episode") >= MAX_EPISODES_PER_CALL:
+                return (f"Nicht vorgemerkt: höchstens {MAX_EPISODES_PER_CALL} Episode pro Zwischenruf "
+                        "(Episoden sind lang und halten das Programm auf).")
             if not self.provider.supports_episodes:
                 return ("Podcasts/Episoden kann die aktuelle Musikquelle (lokale Bibliothek) nicht abspielen. "
                         "Sag das dem Hörer kurz mit reply.")
@@ -223,6 +230,12 @@ class DispatchSession:
         label = PLUGIN_LABELS.get(tool.name, tool.name)
 
         def run(**kwargs: Any) -> str:
+            args = json.dumps(kwargs, sort_keys=True, default=str)
+            earlier = next((a for a in self.done if a.get("target") == tool.name and a.get("args") == args
+                            and a["status"] == "done"), None)
+            if earlier is not None:
+                # Already ran in an earlier attempt of this call (e.g. before a crash).
+                return f"Bereits erledigt, nicht wiederholt: {earlier['summary']}"
             try:
                 result = tool.func(**kwargs)
                 result = result if isinstance(result, str) else str(result)
@@ -232,7 +245,13 @@ class DispatchSession:
                 result, failed = f"Fehler: {exc}", True
             action = new_action("plugin", NOW, f"{label}: {result[:160]}", "failed" if failed else "done")
             action["target"] = tool.name
+            action["args"] = args
             self.done.append(action)
+            if self.on_done is not None:
+                try:
+                    self.on_done(self.done)
+                except Exception:
+                    logger.warning("Could not save the direct action of call %s", self.call["id"], exc_info=True)
             return result
 
         return Tool(name=tool.name, description=tool.description, parameters=tool.parameters, func=run,

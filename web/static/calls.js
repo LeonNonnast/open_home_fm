@@ -99,6 +99,13 @@
     return c.status === "expired" || (c.status === "failed" && !c.dispatched && !!c.text);
   }
 
+  // Own calls not on air yet can be withdrawn (DELETE: whatever is still undoable is undone).
+  function canWithdraw(c) {
+    if (!own.has(c.id)) return false;
+    if (["new", "processing", "retrying"].includes(c.status)) return true;
+    return c.status === "queued" && (c.actions || []).some((a) => a.undo_available);
+  }
+
   // The call's status line (German, volatile parts computed here so they stay current).
   function statusLine(c) {
     const dispatch = listMeta.dispatch || Status.data?.desks?.dispatch;
@@ -157,7 +164,8 @@
         <p>${esc(plain(c.reply_text))}</p>
         ${c.reply_audio_url ? `<button class="btn ghost small" type="button" data-listen data-fkey="listen">Anhören</button>` : ""}
       </div>` : "";
-    const final = !actions && !reply && c.final_message && ["routed", "aired"].includes(c.status)
+    // "routed" without actions: the status line already says "keine Aktion: <final message>".
+    const final = !actions && !reply && c.final_message && c.status === "aired"
       ? `<p class="call-final">${esc(plain(c.final_message))}</p>` : "";
     const fb = feedback.get(c.id);
     return `
@@ -174,6 +182,7 @@
         ${actions ? `<ul class="actions" aria-label="Ergebnis der Leitstelle">${actions}</ul>` : ""}
         ${reply}${final}
         ${canRetry(c) ? `<button class="btn small" type="button" data-retry data-fkey="retry">Nochmal senden</button>` : ""}
+        ${canWithdraw(c) ? `<button class="btn ghost small" type="button" data-withdraw data-fkey="withdraw">Zurückziehen</button>` : ""}
         ${fb ? `<p class="note ${esc(fb.kind || "")}">${esc(fb.text)}</p>` : ""}
       </div>`;
   }
@@ -548,6 +557,21 @@
           schedule(1500);
         } catch (err) {
           flash(c.id, "Nochmal senden fehlgeschlagen (" + err.message.replace(/^\d+: /, "") + ").", "err");
+        }
+        return;
+      }
+      const withdrawBtn = e.target.closest("[data-withdraw]");
+      if (withdrawBtn) {
+        withdrawBtn.disabled = true;
+        try {
+          const view = await api(`/api/calls/${encodeURIComponent(c.id)}`, { method: "DELETE" });
+          merge(view);
+          flash(c.id, view.status === "removed" ? "Zurückgezogen." : "Läuft schon – nicht mehr alles zurückzuziehen.",
+            view.status === "removed" ? "ok" : "");
+          if (!li.contains(document.activeElement)) li.focus();
+        } catch (err) {
+          withdrawBtn.disabled = false;
+          flash(c.id, "Zurückziehen nicht möglich (" + err.message.replace(/^\d+: /, "") + ").", "err");
         }
         return;
       }

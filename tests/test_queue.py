@@ -67,10 +67,28 @@ def test_remaining_program_seconds(tmp_path):
         "program",
         _track("a", 200), _track("b", None), Segment("jingle", "J", "/j.wav", duration_seconds=12.5),
     ))
-    q.append(_item("reply", _track("r", 300)))  # other lanes don't count
+    q.append(_item("filler", _track("f", 300)))  # the filler doesn't count
     assert q.remaining_program_seconds() == 200 + TRACK_ESTIMATE_SECONDS + 12.5
     q.start_segment(block.id, 0)  # "a" is on air now: only its remainder (from the player) counts
     assert q.remaining_program_seconds(current_remaining=50) == 50 + TRACK_ESTIMATE_SECONDS + 12.5
+
+
+def test_lanes_ahead_of_the_program_count_into_the_fill_level(tmp_path):
+    q = _queue(tmp_path)
+    q.append(_item("program", _track("a", 200)))
+    q.append(_item("reply", Segment("episode", "Podcast", "u:ep", duration_seconds=3600)))
+    held = datetime.now(timezone.utc) + timedelta(hours=1)
+    q.append(_item("reply", _track("later", 300), not_before=held.isoformat()))  # held: not yet on air
+    assert q.remaining_program_seconds() == 200 + 3600
+
+
+def test_program_blocks_waiting_behind_an_episode_do_not_age(tmp_path):
+    q = _queue(tmp_path)
+    block = q.append(_item("program", _track("a", 200)))
+    before = datetime.fromisoformat(block.expires_at)
+    episode = q.append(_item("reply", Segment("episode", "Podcast", "u:ep", duration_seconds=5400)))
+    q.start_segment(episode.id, 0)
+    assert datetime.fromisoformat(q.get(block.id).expires_at) - before == timedelta(seconds=5400)
 
 
 def test_cursor_resumes_with_next_segment_after_restart(tmp_path):

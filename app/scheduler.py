@@ -23,6 +23,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.agent.desk import DESK_LABELS, DESKS, DeskConfig, DeskRunner
 from app.config import is_broadcast_time, load_config
+from app.program.calls import STUCK_PROCESSING_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,9 @@ class DeskScheduler:
             calls = self.runner.calls
             minutes = DeskConfig.from_config("dispatch", load_config()).settings["reply_expires_minutes"]
             calls.expire_stale(int(minutes))
+            if not self.runner.is_running("dispatch"):
+                # Left `processing` by an error nobody caught - back to the dispatch desk.
+                calls.recover_processing(older_than_minutes=STUCK_PROCESSING_MINUTES)
             calls.sync()
             if calls.has_pending() and not self.runner.is_running("dispatch"):
                 self.runner.request("dispatch", "poll", condition=calls.has_pending)

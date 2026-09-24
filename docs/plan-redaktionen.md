@@ -269,6 +269,14 @@ class DeskConfig:
   `retrying / expired / removed`. Status je Aktion: `done` (direkte Aktion), `queued → playing
   → aired`, `noted → used` (Wunsch/Hinweis), `held` (wartet auf Sendebeginn), `removed`,
   `expired`, `failed`.
+  Ein Wunsch ist `used`, sobald sein Block eingeplant ist; verfällt der Block oder wird er
+  entfernt, bevor der Wunsch-Song lief, geht der Wunsch zurück ins Postfach (`noted`).
+  Zurückziehen ergibt `removed` nur, wenn nichts mehr läuft/geplant ist – eine schon laufende
+  Antwort bleibt sichtbar bis `aired`. Antwortet das Modell nur mit Text ohne Tool, wird es
+  einmal ermahnt; bleibt es dabei, zeigt der Zwischenruf „keine Aktion: <Text>“ (der Text wird
+  bewusst nicht gesendet – er richtet sich meist an uns, nicht an den Hörer). Höchstens eine
+  Podcast-Episode pro Zwischenruf; Antworten/Episoden zählen in den Füllstand, und Programm-
+  blöcke dahinter altern nicht, solange davor etwas läuft.
 
 #### Nachrichtenredaktion (`news`)
 - Läuft `lead_minutes` vor jedem Slot. Zwei Ausgabeformate:

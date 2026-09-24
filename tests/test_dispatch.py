@@ -1,6 +1,7 @@
 """The dispatch desk ("Leitstelle") with a ScriptedLLM: routing, staging, retry, undo, airing."""
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -444,3 +445,140 @@ def test_inbox_migration(config_env: Path):
     assert not list(inbox.iterdir())
     assert len(list((config_env / "data" / "processed").iterdir())) == 3
     assert migrate_inbox(calls, config_env) == 0 and len(calls.all()) == 1
+
+
+# ---------- review fixes ----------
+
+def test_withdrawing_a_call_whose_reply_already_plays_keeps_it_on_air_status(env):
+    call = env.dispatch("Als Nächstes Queen", [[("play_next", {"query": "Queen", "announce_text": "Für Mama"})], "ok"])
+    item_id = call["actions"][0]["queue_item_id"]
+    queue = env.runner.queue
+    queue.start_segment(item_id, 0)
+    withdrawn = env.calls.remove_call(call["id"])
+    assert withdrawn["status"] == "queued" and status_text(withdrawn) == "läuft jetzt"
+    queue.start_segment(item_id, 1)
+    queue.finish_item(item_id)
+    env.calls.sync()
+    assert env.calls.get(call["id"])["status"] == "aired"
+
+
+def test_withdrawn_call_follows_a_restored_queue_item(env):
+    call = env.dispatch("Als Nächstes Queen", [[("play_next", {"query": "Queen"})], "ok"])
+    item_id = call["actions"][0]["queue_item_id"]
+    assert env.calls.remove_call(call["id"])["status"] == "removed"
+    env.runner.queue.restore(item_id)
+    env.calls.sync()
+    restored = env.calls.get(call["id"])
+    assert restored["status"] == "queued" and restored["actions"][0]["status"] == "queued"
+
+
+def test_wish_goes_back_to_the_mailbox_when_its_block_does_not_air(env):
+    call = env.dispatch("demnächst Beatles", [[("add_music_wish", {"text": "Beatles"})], "ok"])
+    wish_id = call["actions"][0]["wish_id"]
+    queue, wishes = env.runner.queue, env.runner.wishes
+    block = queue.append(QueueItem.new("program", "music", [
+        Segment("track", "x", "u:x"), Segment("track", "Hey Jude", "u:jude", wish_id=wish_id)]))
+    wishes.mark_used([wish_id], block.id)
+    env.calls.sync()
+    assert env.calls.get(call["id"])["actions"][0]["status"] == "used"
+
+    queue.remove(block.id)  # removed in the UI before the wish's song aired
+    env.calls.sync()
+    assert wishes.get(wish_id)["status"] == "noted" and [w["id"] for w in wishes.open()] == [wish_id]
+    action = env.calls.get(call["id"])["actions"][0]
+    assert action["status"] == "noted" and action["note"] is None
+
+    queue.restore(block.id)  # restored: the block takes the wish again
+    env.calls.sync()
+    assert wishes.get(wish_id)["status"] == "used"
+
+    queue.start_segment(block.id, 0)
+    queue.start_segment(block.id, 1)  # the wish's song is on air
+    queue.expire_lanes(("program",), "Sendeschluss")
+    env.calls.sync()
+    assert wishes.get(wish_id)["status"] == "used"
+
+
+def test_expired_wish_marks_the_call_expired(env):
+    call = env.dispatch("demnächst Beatles", [[("add_music_wish", {"text": "Beatles"})], "ok"])
+    wish_id = call["actions"][0]["wish_id"]
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    path = env.runner.wishes.path
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["wishes"][0]["valid_until"] = past
+    path.write_text(json.dumps(data), encoding="utf-8")
+    env.calls.sync()
+    assert env.runner.wishes.get(wish_id)["status"] == "expired"
+    assert env.calls.get(call["id"])["status"] == "expired"
+
+
+def test_error_outside_the_llm_loop_does_not_leave_the_call_processing(env, monkeypatch):
+    call = env.calls.create("Als Nächstes Queen")
+    env.llm = ScriptedLLM([[("play_next", {"query": "Queen"})], "ok"])
+
+    def broken_commit(self):
+        raise OSError("disk full")
+    monkeypatch.setattr(desk_module.DispatchSession, "commit", broken_commit)
+    result = env.runner.run("dispatch", "call")
+    failed = env.calls.get(call["id"])
+    assert result["error"] and failed["status"] == "retrying" and "disk full" in failed["error"]
+
+
+def test_stuck_processing_calls_are_recovered(env):
+    call = env.calls.create("Hallo")
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    env.calls.claim_next()
+    assert env.calls.recover_processing(older_than_minutes=5) == 0  # just claimed: in the works
+    data = env.calls.get(call["id"]) | {"updated_at": old}
+    env.calls._write(data)
+    assert env.calls.recover_processing(older_than_minutes=5) == 1
+    assert env.calls.get(call["id"])["status"] == "new"
+
+
+def test_plain_text_answer_is_nudged_once_then_shown_as_no_action(env):
+    call = env.dispatch("Wie spät ist es?", ["Es ist 8 Uhr.", [("reply", {"text": "Es ist acht Uhr."})], "ok"])
+    assert "Nutze die Tools" in env.llm.requests[1][-1].content
+    assert call["status"] == "queued" and [a["type"] for a in call["actions"]] == ["reply"]
+
+    call = env.dispatch("Hmm", ["Das verstehe ich nicht.", "Wirklich nichts zu tun."])
+    assert call["status"] == "routed" and call["actions"] == []
+    assert status_text(call) == "keine Aktion: Wirklich nichts zu tun."
+
+
+def test_direct_actions_are_saved_at_once_and_not_repeated_after_a_crash(env):
+    call = env.calls.create("Licht an und erzähl was", author="Mama")
+    seen = []
+
+    class CrashingLLM(ScriptedLLM):
+        def chat(self, messages, tools):
+            if len(self.requests) == 1:
+                seen.append(env.calls.get(call["id"])["actions"])
+                raise SystemExit  # the process dies mid-run (not a normal LLM error)
+            return super().chat(messages, tools)
+
+    env.llm = CrashingLLM([[("control_hue_lights", {"action": "on"})]])
+    with pytest.raises(SystemExit):
+        env.runner.run("dispatch", "call")
+    assert [a["status"] for a in seen[0]] == ["done"]
+
+    assert env.calls.recover_processing() == 1  # restart
+    env.llm = ScriptedLLM([[("control_hue_lights", {"action": "on"}), ("reply", {"text": "Licht ist an."})], "ok"])
+    assert env.runner.run("dispatch", "call")["error"] is None
+    assert env.plugin_calls("hue") == ["on"]
+    assert "Bereits erledigt" in _tool_results(env.llm)[0]
+    assert [a["type"] for a in env.calls.get(call["id"])["actions"]] == ["plugin", "reply"]
+
+
+def test_only_one_episode_per_call(env):
+    class EpisodeProvider(FakeMusicProvider):
+        supports_episodes = True
+
+        def search_episodes(self, query, limit=5):
+            return [track(f"Folge {query}", "Podcast", uri=f"spotify:episode:{query}", duration=3600)]
+
+    env.provider.__class__ = EpisodeProvider
+    call = env.dispatch("Zwei Folgen bitte", [
+        [("play_next", {"episode_query": "1"}), ("play_next", {"episode_query": "2"})], "ok"])
+    assert "höchstens 1 Episode" in _tool_results(env.llm)[1]
+    item = env.runner.queue.get(call["actions"][0]["queue_item_id"])
+    assert [s.type for s in item.segments] == ["episode"]

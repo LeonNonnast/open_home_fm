@@ -37,6 +37,11 @@ PENDING_STATUSES = ("new", "retrying")
 # Calls in these states are dropped from disk first when there are more than MAX_CALLS.
 FINAL_STATUSES = ("routed", "aired", "failed", "expired", "removed")
 MAX_CALLS = 300
+# Voice calls stuck before confirmation (never confirmed, or a transcription that never came
+# back) may be pruned too once they're this old.
+STALE_DRAFT_AFTER = timedelta(days=1)
+# A call `processing` this long while the dispatch desk isn't running was left by an error.
+STUCK_PROCESSING_MINUTES = 5
 ID_PATTERN = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{6}$")
 # ETA changes smaller than this don't count as a change of the call (keeps `since` polling quiet).
 ETA_TOLERANCE_SECONDS = 30
@@ -117,6 +122,10 @@ def status_text(call: dict[str, Any]) -> str:
     if status == "aired":
         return f"gesendet {hhmm(call.get('aired_at'))}"
     if status == "routed":
+        if not actions:
+            # The model answered without using a tool: nothing happened, say so (and what it said).
+            message = (call.get("final_message") or "").strip()
+            return "keine Aktion" + (f": {message[:160]}" if message else "")
         return "erledigt"
     if status == "failed":
         return f"fehlgeschlagen: {call.get('error') or 'unbekannter Fehler'}"
@@ -134,6 +143,30 @@ def call_view(call: dict[str, Any]) -> dict[str, Any]:
     view.pop("audio_file", None)
     view.pop("reply_audio", None)
     return view
+
+
+def reopen_unplayed_wishes(wishes: Mailbox, items: dict[str, QueueItem]) -> list[str]:
+    """A wish counts as used as soon as its block is queued (so the music desk doesn't plan it
+    twice) - but only stays used when its segment aired: a block that expired or was removed
+    before that gives the wish back to the mailbox (if still valid), a restored block takes it
+    again."""
+    reopen, retake = [], []
+    for wish in wishes.all():
+        item = items.get(wish.get("queue_item_id") or "")
+        if item is None:
+            continue
+        index = next((i for i, s in enumerate(item.segments) if s.wish_id == wish["id"]), None)
+        aired = index is not None and item.next_segment > index
+        if wish["status"] == "used" and item.status in ("expired", "skipped", "removed") and not aired:
+            reopen.append(wish["id"])
+        elif wish["status"] == "noted" and item.status in ("queued", "playing"):
+            retake.append((wish["id"], item.id))
+    if reopen:
+        wishes.reopen(reopen)
+        logger.info("Wishes back in the mailbox (their block didn't air): %s", ", ".join(reopen))
+    for wish_id, item_id in retake:
+        wishes.mark_used([wish_id], item_id)
+    return reopen
 
 
 class CallStore:
@@ -230,7 +263,9 @@ class CallStore:
             if excess <= 0:
                 break
             call = self._read(path)
-            if call is None or call["status"] in FINAL_STATUSES:
+            stale_draft = call is not None and call["status"] in ("transcribing", "awaiting_confirmation") and (
+                (_parse(call.get("updated_at")) or _now()) < _now() - STALE_DRAFT_AFTER)
+            if call is None or call["status"] in FINAL_STATUSES or stale_draft:
                 path.unlink(missing_ok=True)
                 for extra in (call or {}).get("audio_file"), (call or {}).get("reply_audio"):
                     if extra and Path(extra).parent == self.dir:
@@ -255,14 +290,25 @@ class CallStore:
                     return claimed
         return None
 
-    def recover_processing(self) -> int:
-        """At startup: calls left `processing` by a crash go back to the dispatch desk."""
+    def recover_processing(self, older_than_minutes: float | None = None) -> int:
+        """Calls left `processing` (by a crash at startup, or by an error while the dispatch desk
+        isn't running: `older_than_minutes`) go back to the dispatch desk."""
+        cutoff = _now() - timedelta(minutes=older_than_minutes or 0)
         count = 0
         for call in self.all():
-            if call["status"] == "processing":
-                self.update(call["id"], lambda c: c.update(status="new"))
+            if call["status"] != "processing":
+                continue
+            if older_than_minutes is not None and (_parse(call.get("updated_at")) or cutoff) > cutoff:
+                continue
+            recovered = self.update(call["id"], lambda c: c.update(status="new") if c["status"] == "processing" else False)
+            if recovered is not None and recovered["status"] == "new":
+                logger.info("Call %s was left processing, back to the dispatch desk", call["id"])
                 count += 1
         return count
+
+    def interrupted_transcriptions(self) -> list[dict[str, Any]]:
+        """At startup: voice calls whose transcription a restart cut off."""
+        return [c for c in self.all() if c["status"] == "transcribing"]
 
     def expire_stale(self, minutes: int) -> int:
         """Pending calls the dispatch desk couldn't handle within `minutes` expire ("Nochmal senden")."""
@@ -286,14 +332,18 @@ class CallStore:
     def sync(self, call_ids: list[str] | None = None) -> None:
         """Updates the dispatched calls from the queue and the mailboxes."""
         items = {i.id: i for i in self.queue.items()} if self.queue else {}
+        if self.wishes is not None:
+            reopen_unplayed_wishes(self.wishes, items)
         wishes = {w["id"]: w for w in self.wishes.all()} if self.wishes else {}
         notes = {n["id"]: n for n in self.notes.all()} if self.notes else {}
         estimates: dict[str, datetime] | None = None
         for call in self.all():
             if not call.get("dispatched") or (call_ids is not None and call["id"] not in call_ids):
                 continue
+            # Final calls are still followed while an action can change: a queue item restored in
+            # the UI, a wish back in the mailbox after its block expired.
             if call["status"] in ("removed", "expired", "failed") and not any(
-                a.get("wish_id") or a.get("note_id") for a in call["actions"]
+                a.get("wish_id") or a.get("note_id") or a.get("queue_item_id") for a in call["actions"]
             ):
                 continue
             if estimates is None:
@@ -338,6 +388,8 @@ class CallStore:
             elif action.get("wish_id") in wishes:
                 wish = wishes[action["wish_id"]]
                 action["status"] = wish["status"]
+                if wish["status"] == "noted":
+                    action["note"] = None  # back in the mailbox (its block didn't air)
                 block = items.get(wish.get("queue_item_id") or "")
                 if wish["status"] == "used" and block is not None:
                     start = estimates.get(block.id)
@@ -356,7 +408,7 @@ class CallStore:
             status = "aired"
         elif call["actions"] and not live and any(a["status"] == "removed" for a in call["actions"]):
             status = "removed"
-        elif queue_states and queue_states <= {"expired", "removed"} and not live:
+        elif call["actions"] and not live and any(a["status"] == "expired" for a in call["actions"]):
             status = "expired"
         else:
             status = "routed"
@@ -396,7 +448,10 @@ class CallStore:
         return self.get(call_id), None
 
     def remove_call(self, call_id: str) -> dict[str, Any] | None:
-        """Withdraws a whole call: undoes everything still undoable, a pending one is dropped."""
+        """Withdraws a whole call: undoes everything still undoable, a pending one is dropped.
+
+        A dispatched call then shows what's left (sync): `removed` only when nothing of it is
+        still on air, planned or done - a reply already playing keeps it `queued` until it aired."""
         call = self.get(call_id)
         if call is None:
             return None
@@ -404,7 +459,10 @@ class CallStore:
             if undo_available(action):
                 self.undo_action(call_id, index)
 
-        def remove(c: dict[str, Any]) -> None:
-            if c["status"] not in ("aired", "routed") or not c["actions"]:
-                c["status"] = "removed"
-        return self.update(call_id, remove)
+        def remove(c: dict[str, Any]) -> bool | None:
+            if c.get("dispatched"):
+                return False
+            c["status"] = "removed"
+        self.update(call_id, remove)
+        self.sync([call_id])
+        return self.get(call_id)

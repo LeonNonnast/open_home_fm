@@ -27,6 +27,7 @@ notes_router = APIRouter(prefix="/api/news-notes", tags=["calls"])
 
 MAX_TEXT = 1000
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
+UPLOAD_CHUNK = 256 * 1024
 AUDIO_SUFFIXES = {".webm", ".ogg", ".oga", ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".opus"}
 
 
@@ -69,15 +70,24 @@ def create_text_call(request: Request, text: str, author: str | None) -> dict:
     return call
 
 
-def save_upload(calls: CallStore, file: UploadFile, data: bytes) -> Path:
-    if len(data) > MAX_AUDIO_BYTES:
+def save_upload(calls: CallStore, file: UploadFile) -> Path:
+    """Copies the upload to data/calls in chunks, never more than MAX_AUDIO_BYTES."""
+    if file.size is not None and file.size > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Aufnahme zu groß")
     suffix = Path(file.filename or "recording.webm").suffix.lower()
     suffix = suffix if suffix in AUDIO_SUFFIXES else ".webm"
     calls.dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     path = calls.dir / f"rec_{stamp}{suffix}"
-    path.write_bytes(data)
+    written = 0
+    with path.open("wb") as out:
+        while chunk := file.file.read(UPLOAD_CHUNK):
+            written += len(chunk)
+            if written > MAX_AUDIO_BYTES:
+                out.close()
+                path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="Aufnahme zu groß")
+            out.write(chunk)
     return path
 
 
@@ -139,16 +149,36 @@ def _transcribe(calls: CallStore, stt_engine, call_id: str, audio_path: Path) ->
     calls.update(call_id, done)
 
 
-@router.post("/voice")
-async def post_voice(request: Request, file: UploadFile = File(...), author: str | None = Form(None)) -> dict:
-    """Stores the recording and answers at once (`transcribing`); STT runs in the background."""
-    calls = _calls(request)
-    audio_path = save_upload(calls, file, await file.read())
-    call = calls.create("", author=author, source="voice", status="transcribing", audio_file=str(audio_path))
+def start_transcription(calls: CallStore, stt_engine, call: dict) -> None:
     threading.Thread(
-        target=_transcribe, args=(calls, getattr(request.app.state, "stt_engine", None), call["id"], audio_path),
+        target=_transcribe, args=(calls, stt_engine, call["id"], Path(call["audio_file"])),
         daemon=True, name=f"stt-{call['id']}",
     ).start()
+
+
+def resume_transcriptions(calls: CallStore, stt_engine) -> int:
+    """At startup: voice calls a restart left `transcribing` are transcribed again (their
+    recording is still there) - or, without it, wait for the listener to type the text."""
+    count = 0
+    for call in calls.interrupted_transcriptions():
+        if call.get("audio_file") and Path(call["audio_file"]).exists():
+            start_transcription(calls, stt_engine, call)
+        else:
+            calls.update(call["id"], lambda c: c.update(
+                status="awaiting_confirmation",
+                error="Transkription unterbrochen – bitte eintippen oder nochmal aufnehmen.",
+            ) if c["status"] == "transcribing" else False)
+        count += 1
+    return count
+
+
+@router.post("/voice")
+def post_voice(request: Request, file: UploadFile = File(...), author: str | None = Form(None)) -> dict:
+    """Stores the recording and answers at once (`transcribing`); STT runs in the background."""
+    calls = _calls(request)
+    audio_path = save_upload(calls, file)
+    call = calls.create("", author=author, source="voice", status="transcribing", audio_file=str(audio_path))
+    start_transcription(calls, getattr(request.app.state, "stt_engine", None), call)
     return call_view(call)
 
 

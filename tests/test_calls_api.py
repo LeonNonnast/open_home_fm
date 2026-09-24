@@ -175,3 +175,77 @@ def test_inbox_alias_creates_calls(client):
     assert voice["text"] == "Als Nächstes bitte Queen"
     assert client.app.state.calls.get(voice["call_id"])["source"] == "voice"
     assert "items" in client.get("/api/inbox").json()
+
+
+def test_voice_upload_is_limited_while_reading(client, monkeypatch):
+    import app.api.routes_calls as routes_calls
+
+    monkeypatch.setattr(routes_calls, "MAX_AUDIO_BYTES", 1000)
+    monkeypatch.setattr(routes_calls, "UPLOAD_CHUNK", 100)
+    response = client.post("/api/calls/voice", files={"file": ("rec.webm", b"x" * 1001, "audio/webm")})
+    assert response.status_code == 413
+    assert not list(client.app.state.calls.dir.glob("rec_*"))
+
+
+def test_transcriptions_cut_off_by_a_restart_are_resumed(config_env: Path):
+    from app.api.routes_calls import resume_transcriptions
+    from app.program.calls import CallStore
+
+    calls = CallStore(config_env / "data" / "calls")
+    calls.dir.mkdir(parents=True)
+    audio = calls.dir / "rec_1.webm"
+    audio.write_bytes(b"x")
+    with_audio = calls.create("", source="voice", status="transcribing", audio_file=str(audio))
+    without = calls.create("", source="voice", status="transcribing", audio_file=str(calls.dir / "gone.webm"))
+    stt = FakeSTT()
+    stt.release.set()
+    assert resume_transcriptions(calls, stt) == 2
+    assert wait_for(lambda: calls.get(with_audio["id"])["status"] == "awaiting_confirmation")
+    assert calls.get(with_audio["id"])["text"] == "Als Nächstes bitte Queen"
+    lost = calls.get(without["id"])
+    assert lost["status"] == "awaiting_confirmation" and "unterbrochen" in lost["error"]
+
+
+def test_old_unconfirmed_voice_calls_are_prunable(config_env: Path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import app.program.calls as calls_module
+    from app.program.calls import CallStore
+
+    calls = CallStore(config_env / "data" / "calls")
+    stuck = calls.create("", source="voice", status="transcribing")
+    calls._write(calls.get(stuck["id"]) | {"updated_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()})
+    fresh = calls.create("hallo", status="awaiting_confirmation")
+    monkeypatch.setattr(calls_module, "MAX_CALLS", 1)
+    calls.create("neu")
+    assert calls.get(stuck["id"]) is None and calls.get(fresh["id"]) is not None
+
+
+def test_stt_runs_one_transcription_at_a_time(monkeypatch):
+    import sys
+    import types
+
+    from app.audio.stt import FasterWhisperSTTEngine
+
+    state = {"loads": 0, "active": 0, "max": 0}
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            state["loads"] += 1
+            time.sleep(0.05)
+
+        def transcribe(self, path):
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+            time.sleep(0.05)
+            state["active"] -= 1
+            return [types.SimpleNamespace(text=" hallo ")], None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Model))
+    engine = FasterWhisperSTTEngine()
+    threads = [threading.Thread(target=engine.transcribe, args=(Path("x.webm"),)) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert state == {"loads": 1, "active": 0, "max": 1}

@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 LANES = ("urgent", "reply", "news", "program", "filler")
 LANE_PRIORITY = {lane: i for i, lane in enumerate(LANES)}
 ACTIVE_STATUSES = ("queued", "playing")
+# Lanes that play before the program: their time counts into the fill level, and while they air
+# the program blocks waiting behind them don't age (a 90-min episode must not expire them).
+AHEAD_OF_PROGRAM = ("urgent", "reply", "news")
 FINAL_STATUSES = ("played", "skipped", "expired", "removed")
 
 # Tracks whose duration the provider doesn't report (some local files).
@@ -242,6 +245,12 @@ class ProgramQueue:
             item.status = "playing"
             item.next_segment = index + 1
             item.updated_at = now.isoformat()
+            if item.lane in AHEAD_OF_PROGRAM and 0 <= index < len(item.segments):
+                delay = timedelta(seconds=item.segments[index].estimated_seconds())
+                for waiting in items:
+                    expires = _parse(waiting.expires_at)
+                    if waiting.lane == "program" and waiting.status in ACTIVE_STATUSES and expires is not None:
+                        waiting.expires_at = (expires + delay).isoformat()
             self._save(items)
             write_json_atomic(
                 self.cursor_path, {"item_id": item_id, "segment_index": index, "started_at": now.isoformat()}
@@ -367,16 +376,21 @@ class ProgramQueue:
         return starts
 
     def remaining_program_seconds(self, current_remaining: float = 0.0, now: datetime | None = None) -> float:
-        """How long the `program` lane still runs: queued segments + the rest of the current one.
+        """How long until the program runs out: queued segments of the `program` lane and of the
+        lanes played before it (a queued episode fills the air too) + the rest of the current one.
 
         `current_remaining` comes from the player's memory (started_at/duration of the segment on
-        air) and is only added by the caller when that segment belongs to the program lane.
+        air) and is only added by the caller when that segment belongs to one of these lanes.
         """
         now = now or _now()
         total = 0.0
         for item in self.items():
-            if item.lane != "program" or item.status not in ACTIVE_STATUSES or item.is_expired(now):
+            if item.lane not in ("program", *AHEAD_OF_PROGRAM) or item.status not in ACTIVE_STATUSES \
+                    or item.is_expired(now):
                 continue
+            not_before = _parse(item.not_before)
+            if item.lane != "program" and not_before is not None and not_before > now:
+                continue  # held (e.g. until the broadcast starts), doesn't fill the air now
             total += sum(s.estimated_seconds() for s in item.remaining_segments())
         return total + max(0.0, current_remaining)
 

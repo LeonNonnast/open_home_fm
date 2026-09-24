@@ -76,6 +76,12 @@ DESK_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 BACKOFF_SECONDS = {"music": (60, 120, 300, 600), "dispatch": (10, 30, 60)}
+# Sent once when the dispatch desk answered a call with plain text and no tool.
+NO_ACTION_NUDGE = (
+    "Du hast noch kein Tool benutzt, beim Hörer ist also nichts angekommen. Nutze die Tools: reply für eine "
+    "Antwort oder Rückfrage, play_next für Songs, add_music_wish für Wünsche, note_for_news für Hinweise, "
+    "Plugins für direkte Aktionen. Wenn wirklich nichts zu tun ist, antworte nur kurz mit dem Grund."
+)
 # Earlier calls (with their results) the dispatch desk sees as context.
 DISPATCH_RECENT_CALLS = 5
 # (min, max) of the numeric desk settings - the API rejects values outside, from_config falls
@@ -346,6 +352,10 @@ class DeskRunner:
         llm = create_llm_provider(config)
 
         recent_tracks = recently_played(self.play_history_path, int(s["no_repeat_minutes"]))
+        try:
+            self.calls.sync()  # gives wishes of blocks that expired unplayed back to the mailbox
+        except Exception:
+            logger.warning("Could not sync the calls before the music desk run", exc_info=True)
         appended: list[QueueItem] = []
         registry = ToolRegistry()
         for tool in build_builtin_tools(
@@ -575,7 +585,12 @@ class DeskRunner:
         error = None
         while (call := self.calls.claim_next()) is not None:
             handled.append(call["id"])
-            error = self._dispatch_call(call, config, desk, trigger, tools)
+            try:
+                error = self._dispatch_call(call, config, desk, trigger, tools)
+            except Exception as exc:
+                # Outside the LLM loop (plugins, context, commit): never leave the call `processing`.
+                logger.exception("Dispatching call %s failed", call["id"])
+                error = self._dispatch_failed(call, [], None, f"interner Fehler: {exc}", trigger)
             if error is not None:
                 break
         self.calls.sync()
@@ -615,6 +630,9 @@ class DeskRunner:
             call, desk.settings, self.queue, self.wishes, self.news_notes, tools["provider"], tools["tts"],
             self.start_estimates, on_air=on_air, next_on_air=next_start, provider_error=tools.get("provider_error"),
         )
+        # Each direct action is saved on the call right away: after a crash mid-run it isn't
+        # repeated (the next attempt is told about it, and the same action is skipped).
+        session.on_done = lambda done: self.calls.update(call["id"], lambda c: c.update(actions=list(done)))
         registry = ToolRegistry()
         for tool in session.tools():
             registry.register(tool)
@@ -628,6 +646,14 @@ class DeskRunner:
             LLMMessage(role="user", content=self._dispatch_user_message(call, on_air, next_start)),
         ]
         final_text, error = self._llm_loop(tools["llm"], messages, None, registry, desk.max_tool_iterations)
+        if error is None and not session.staged and not session.done:
+            # Plain text only, nothing staged: ask once more. A text without tools stays text - it
+            # isn't read on air (it's usually addressed to us, not to the listener); the call
+            # shows it as "keine Aktion: …" instead of "erledigt".
+            logger.info("Call %s: the dispatch desk used no tool, nudging once", call["id"])
+            messages.append(LLMMessage(role="user", content=NO_ACTION_NUDGE))
+            retry_text, error = self._llm_loop(tools["llm"], messages, None, registry, desk.max_tool_iterations)
+            final_text = retry_text or final_text
         if error is not None:
             return self._dispatch_failed(call, messages, session.done, error, trigger)
 

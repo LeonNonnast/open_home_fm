@@ -1,11 +1,12 @@
 """The two mailboxes the dispatch desk fills: music wishes and notes for the news.
 
 - `data/music_wishes.json`: "demnächst" wishes. The music desk sees the open ones as context and
-  marks a wish `used` when a planned segment carries its `wish_id`.
+  marks a wish `used` when a planned segment carries its `wish_id`; if that block expires or is
+  removed before the segment aired, the wish is `noted` again (calls.reopen_unplayed_wishes).
 - `data/news_notes.json`: hints for the next news (stored only until the news desk arrives).
 
 Entry: {id, text, author, call_id, created_at, valid_until, status, used_at, queue_item_id}
-with status `noted` -> `used` | `removed`; an entry past its `valid_until` counts as `expired`
+with status `noted` -> `used` (-> `noted` again, see above) | `removed`; an entry past its `valid_until` counts as `expired`
 (computed, never stored - a wish can't come back to life, and there's nothing to write back).
 """
 from __future__ import annotations
@@ -140,6 +141,19 @@ class Mailbox:
             if used:
                 self._save(entries)
         return used
+
+    def reopen(self, entry_ids: list[str]) -> None:
+        """Used entries go back to `noted` (their block didn't air); expired ones stay expired."""
+        now = _now().isoformat()
+        with self._lock:
+            entries = self._load()
+            changed = False
+            for entry in entries:
+                if entry["id"] in entry_ids and entry.get("status") == "used":
+                    entry.update(status="noted", used_at=None, updated_at=now)
+                    changed = True
+            if changed:
+                self._save(entries)
 
     def remove(self, entry_id: str) -> dict[str, Any] | None:
         """Discards a noted entry (undo); returns the entry (unchanged when it wasn't noted)."""

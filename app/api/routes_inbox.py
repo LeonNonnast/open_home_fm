@@ -34,9 +34,10 @@ def submit_text(body: TextWishBody, request: Request) -> dict:
 
 
 @router.post("/voice")
-async def submit_voice(request: Request, file: UploadFile = File(...)) -> dict:
+def submit_voice(request: Request, file: UploadFile = File(...)) -> dict:
+    # A plain def: FastAPI runs it in its threadpool, so the synchronous STT doesn't block the loop.
     calls = request.app.state.calls
-    audio_path = save_upload(calls, file, await file.read())
+    audio_path = save_upload(calls, file)
     stt_engine = request.app.state.stt_engine
     if stt_engine is None:
         raise HTTPException(status_code=503, detail="Spracherkennung nicht verfügbar")

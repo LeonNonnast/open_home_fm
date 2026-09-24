@@ -7,6 +7,7 @@ regardless of whether the listener typed or spoke their request.
 from __future__ import annotations
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -30,6 +31,9 @@ class FasterWhisperSTTEngine(STTEngine):
         self.device = device
         self.compute_type = compute_type
         self._model = None  # loaded lazily: the model download/init must not block app startup
+        # One transcription at a time (and the model loaded once): on a Pi, parallel uploads
+        # would only fight over the CPU/RAM.
+        self._lock = threading.Lock()
 
     def _get_model(self):
         if self._model is None:
@@ -42,8 +46,9 @@ class FasterWhisperSTTEngine(STTEngine):
         return self._model
 
     def transcribe(self, audio_path: Path) -> str:
-        segments, _info = self._get_model().transcribe(str(audio_path))
-        text = " ".join(segment.text.strip() for segment in segments)
+        with self._lock:
+            segments, _info = self._get_model().transcribe(str(audio_path))
+            text = " ".join(segment.text.strip() for segment in segments)  # decoding is lazy
         return text.strip()
 
 

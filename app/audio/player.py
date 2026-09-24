@@ -24,7 +24,7 @@ from app.agent.play_history import record_played
 from app.config import is_broadcast_time, load_config
 from app.music.base import MusicProvider, Track
 from app.program.filler import FillerSource
-from app.program.queue import ProgramQueue, QueueItem, Segment
+from app.program.queue import AHEAD_OF_PROGRAM, ProgramQueue, QueueItem, Segment
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class QueuePlayer:
     def remaining_program_seconds(self) -> float:
         remaining = 0.0
         with self._state_lock:
-            if self._current and self._current["lane"] == "program":
+            if self._current and self._current["lane"] in ("program", *AHEAD_OF_PROGRAM):
                 remaining = max(0.0, (self._current["duration"] or 0) - (time.time() - self._current["_started"]))
         return self.queue.remaining_program_seconds(current_remaining=remaining)
 
