@@ -19,7 +19,16 @@ from app.music.base import Device, MusicProvider, Track
 logger = logging.getLogger(__name__)
 
 
-def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_path: Path) -> list[Tool]:
+# Rough length of a spoken segment, used for the program length estimate (TTS audio length isn't
+# known without decoding the file).
+JINGLE_ESTIMATE_SECONDS = 20
+# Tracks whose duration the provider doesn't report (some local files).
+TRACK_ESTIMATE_SECONDS = 210
+
+
+def build_builtin_tools(
+    provider: MusicProvider, tts_engine: TTSEngine, script_path: Path, min_program_minutes: int = 0
+) -> list[Tool]:
     def search_songs(query: str, limit: int = 5) -> str:
         tracks = provider.search_tracks(query, limit=limit)
         if not tracks:
@@ -124,7 +133,23 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
 
         script = Script.new(resolved)
         save_script(script, script_path)
-        return f"Script {script.id} mit {len(resolved)} Segmenten gespeichert."
+        total_minutes = round(
+            sum(
+                (seg.duration_seconds or TRACK_ESTIMATE_SECONDS) if seg.type == "track" else JINGLE_ESTIMATE_SECONDS
+                for seg in resolved
+            )
+            / 60
+        )
+        result = f"Script {script.id} mit {len(resolved)} Segmenten (ca. {total_minutes} Minuten) gespeichert."
+        if total_minutes < min_program_minutes:
+            # The script is saved either way, so a model that stops here still leaves something
+            # playable - but the nudge usually gets it to extend the program instead.
+            result += (
+                f" Das ist zu kurz: das Programm muss mindestens {min_program_minutes} Minuten füllen, "
+                "sonst entsteht Stille bis zum nächsten Durchlauf. Ergänze weitere Songs und rufe "
+                "set_playback_script mit dem vollständigen, verlängerten Programm erneut auf."
+            )
+        return result
 
     return [
         Tool(
@@ -179,9 +204,10 @@ def build_builtin_tools(provider: MusicProvider, tts_engine: TTSEngine, script_p
             name="set_playback_script",
             description=(
                 "Finalisiert das Sendeprogramm dieses Durchlaufs als geordnete Liste aus Song- "
-                "und Jingle-Segmenten. Genau einmal am Ende des Durchlaufs aufrufen. Track-"
-                "Segmente: 'query' (Suchtext) oder 'uri' (aus search_songs/get_playlist_tracks). "
-                "Jingle-Segmente: 'text' (wird als Audio gesprochen)."
+                "und Jingle-Segmenten. Am Ende des Durchlaufs aufrufen. Track-Segmente: 'query' "
+                "(Suchtext 'Artist - Titel', wird automatisch aufgelöst - vorheriges search_songs "
+                "ist nicht nötig) oder 'uri' (aus search_songs/get_playlist_tracks). Jingle-"
+                "Segmente: 'text' (wird als Audio gesprochen)."
             ),
             parameters={
                 "type": "object",

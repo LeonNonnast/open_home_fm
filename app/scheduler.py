@@ -31,7 +31,7 @@ class AgentScheduler:
             logger.exception("Agent loop tick failed")
 
     def start(self) -> None:
-        interval = load_config().get("agent", {}).get("loop_interval_seconds", 300)
+        interval = load_config().get("agent", {}).get("loop_interval_seconds", 1800)
         # next_run_time=None would add the job *paused* in APScheduler 3.x, so it would never fire.
         # Run the first tick right away instead of waiting a full interval after startup.
         self._job = self._scheduler.add_job(self._tick, "interval", seconds=interval, next_run_time=datetime.now())

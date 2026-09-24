@@ -65,6 +65,12 @@ class ScriptPlayer:
             if not is_broadcast_time(load_config()):
                 logger.info("Broadcast window closed, stopping script %s early", script.id)
                 break
+            # Scripts are deliberately longer than the loop interval (buffer against slow/failed
+            # runs), so a fresh one usually arrives mid-script - switch at the next segment
+            # boundary instead of playing the stale remainder first.
+            if index > 0 and self._newer_script_available(script.id):
+                logger.info("New script available, switching after segment %d of script %s", index, script.id)
+                break
             self.current_segment_index = index
             try:
                 if segment.type == "track":
@@ -83,6 +89,14 @@ class ScriptPlayer:
             except Exception:
                 logger.exception("Failed to play segment %d of script %s, skipping", index, script.id)
         self.current_segment_index = None
+
+    def _newer_script_available(self, current_id: str) -> bool:
+        try:
+            latest = load_script(self.script_path)
+        except Exception:
+            logger.warning("Could not read script file while checking for a newer script", exc_info=True)
+            return False
+        return latest is not None and latest.id != current_id and bool(latest.segments)
 
     def _play_jingle(self, audio_path: str) -> None:
         logger.info("Playing jingle: %s", audio_path)

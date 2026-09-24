@@ -22,3 +22,4 @@ data/state.json
 *.onnx
 *.onnx.json
 models/
+config/system_prompt.md.neu

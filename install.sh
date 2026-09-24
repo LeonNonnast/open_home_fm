@@ -111,16 +111,33 @@ quick_update() {
   # config/config.yaml is tracked but rewritten by the web UI, so a plain pull would refuse to
   # run. Set the local version aside, pull, then lay the local values over the new defaults -
   # user settings survive, options added upstream arrive with their defaults.
-  local backup=""
+  local backup="" prompt_backup="" old_head
+  old_head="$(git rev-parse HEAD)"
   if ! git diff --quiet -- config/config.yaml; then
     backup="$(mktemp)"
     cp config/config.yaml "$backup"
     git checkout -- config/config.yaml
   fi
+  # The system prompt is web-UI-editable too; an edited one is kept as-is.
+  if ! git diff --quiet -- config/system_prompt.md; then
+    prompt_backup="$(mktemp)"
+    cp config/system_prompt.md "$prompt_backup"
+    git checkout -- config/system_prompt.md
+  fi
   if ! git pull --ff-only; then
     [ -n "$backup" ] && cp "$backup" config/config.yaml && rm -f "$backup"
+    [ -n "$prompt_backup" ] && cp "$prompt_backup" config/system_prompt.md && rm -f "$prompt_backup"
     echo "git pull fehlgeschlagen - lokale Änderungen an anderen Dateien? Details: git status" >&2
     exit 1
+  fi
+  if [ -n "$prompt_backup" ]; then
+    if ! git diff --quiet "$old_head" HEAD -- config/system_prompt.md; then
+      git show HEAD:config/system_prompt.md > config/system_prompt.md.neu
+      note "System-Prompt: deine Version bleibt aktiv, der Update bringt aber einen neuen mit."
+      note "Zum Vergleichen: diff config/system_prompt.md config/system_prompt.md.neu"
+    fi
+    cp "$prompt_backup" config/system_prompt.md
+    rm -f "$prompt_backup"
   fi
   if [ -n "$backup" ]; then
     .venv/bin/python3 - "$backup" <<'PYEOF'
@@ -421,7 +438,7 @@ AUDIO_OUTPUT_DEVICE="$(ask "ALSA/Pulse-Ausgabegerät (füttert die FM-Sendekette
 
 echo ""
 info "Agent-Loop"
-LOOP_INTERVAL="$(ask "Intervall zwischen Durchläufen in Sekunden" "${LOOP_INTERVAL:-300}")"
+LOOP_INTERVAL="$(ask "Intervall zwischen Durchläufen in Sekunden" "${LOOP_INTERVAL:-1800}")"
 
 # ---------------------------------------------------------------------------
 # 4. Write .env

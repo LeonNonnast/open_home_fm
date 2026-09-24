@@ -5,10 +5,12 @@
 # does not preserve comments - they're documentation for hand-editing, not enforced at runtime.
 
 agent:
-  # How often the agent loop wakes up and processes the inbox / builds the next script.
-  loop_interval_seconds: 300
-  # Max tool-call round-trips per loop iteration, guards against runaway loops.
-  max_tool_iterations: 8
+  # How often the agent loop wakes up and processes the inbox / builds the next script. Each
+  # script is planned to run a bit longer than this (see min_program_minutes_for in loop.py).
+  loop_interval_seconds: 1800
+  # Max tool-call round-trips per loop iteration, guards against runaway loops. A longer program
+  # needs more song lookups, so keep this well above the number of songs per script.
+  max_tool_iterations: 20
 
 schedule:
   # false (default) = always on air. true restricts generation + playback to the daily window

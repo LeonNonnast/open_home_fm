@@ -119,7 +119,7 @@ function renderDial(config) {
   $("dial-window").textContent = schedule.enabled
     ? `Sendefenster ${schedule.start_time} – ${schedule.end_time} Uhr`
     : "Rund um die Uhr auf Sendung";
-  const interval = config.agent?.loop_interval_seconds ?? 300;
+  const interval = config.agent?.loop_interval_seconds ?? 1800;
   $("dial-interval").textContent = interval >= 60
     ? `Neuer Durchlauf alle ${Math.round(interval / 60)} min`
     : `Neuer Durchlauf alle ${interval} s`;
@@ -133,7 +133,7 @@ function fillConfigFields(cfg) {
   $("llm-provider").value = cfg.llm?.provider || "ollama";
   $("llm-model").value = cfg.llm?.[$("llm-provider").value]?.model || "";
   $("music-provider").value = cfg.music?.provider || "local";
-  $("loop-interval").value = cfg.agent?.loop_interval_seconds ?? 300;
+  $("loop-interval").value = cfg.agent?.loop_interval_seconds ?? 1800;
   $("schedule-enabled").checked = !!cfg.schedule?.enabled;
   $("schedule-start").value = cfg.schedule?.start_time ?? "06:00";
   $("schedule-end").value = cfg.schedule?.end_time ?? "23:00";
@@ -153,7 +153,7 @@ async function saveConfig(noteEl) {
   updated.llm.provider = provider;
   updated.llm[provider] = { ...(updated.llm[provider] || {}), model: $("llm-model").value };
   updated.music = { ...(updated.music || {}), provider: $("music-provider").value };
-  updated.agent = { ...(updated.agent || {}), loop_interval_seconds: parseInt($("loop-interval").value, 10) || 300 };
+  updated.agent = { ...(updated.agent || {}), loop_interval_seconds: parseInt($("loop-interval").value, 10) || 1800 };
   updated.schedule = {
     ...(updated.schedule || {}),
     enabled: $("schedule-enabled").checked,

@@ -26,6 +26,17 @@ from app.music import create_music_provider
 logger = logging.getLogger(__name__)
 
 
+def min_program_minutes_for(config: dict) -> int:
+    """How long a script has to run so playback never outruns the next generation run.
+
+    One loop interval plus a buffer for the generation itself (LLM round-trips, TTS) and a
+    failed run or two - the player switches to a newer script at the next segment boundary
+    anyway, so a longer script never delays fresh content.
+    """
+    interval_minutes = config.get("agent", {}).get("loop_interval_seconds", 1800) / 60
+    return round(interval_minutes + max(10, interval_minutes / 3))
+
+
 class AgentLoop:
     def __init__(self, root_dir: Path):
         self.root_dir = root_dir
@@ -44,13 +55,14 @@ class AgentLoop:
         tts_engine = create_tts_engine(config, resolve_path(config["audio"]["jingle_cache_dir"]))
         llm = create_llm_provider(config)
 
+        min_program_minutes = min_program_minutes_for(config)
         registry = ToolRegistry()
-        for tool in build_builtin_tools(provider, tts_engine, self.script_path):
+        for tool in build_builtin_tools(provider, tts_engine, self.script_path, min_program_minutes):
             registry.register(tool)
         register_plugins(registry, self.plugins_dir, config.get("plugins", {}).get("disabled"))
 
         inbox_items = self._collect_inbox()
-        user_content = self._build_user_message(inbox_items)
+        user_content = self._build_user_message(inbox_items, min_program_minutes)
 
         # Saved as part of this run's transcript: static system prompt, auto-fetched plugin
         # context, the actual wishes, and the full tool-calling exchange.
@@ -68,7 +80,7 @@ class AgentLoop:
         history_context = render_history_context(load_recent_transcripts(self.transcripts_dir, n=3))
         history_message = LLMMessage(role="system", content=history_context) if history_context else None
 
-        max_iterations = config.get("agent", {}).get("max_tool_iterations", 8)
+        max_iterations = config.get("agent", {}).get("max_tool_iterations", 20)
         tool_schemas = registry.to_schemas()
 
         final_text = ""
@@ -137,15 +149,22 @@ class AgentLoop:
         return f"{weekday}, {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} Uhr"
 
     @classmethod
-    def _build_user_message(cls, inbox_items: list[tuple[Path, str]]) -> str:
+    def _build_user_message(cls, inbox_items: list[tuple[Path, str]], min_program_minutes: int) -> str:
+        # Stated here rather than only in system_prompt.md: the prompt is user-editable, but the
+        # length requirement is what keeps the station from going silent between runs.
+        length = (
+            f"Das Programm muss mindestens {min_program_minutes} Minuten füllen (ca. "
+            f"{max(1, round(min_program_minutes / 3.5))} Songs plus Ansagen), damit bis zum nächsten "
+            "Durchlauf keine Stille entsteht. Wiederhole keine Songs aus den letzten Durchläufen."
+        )
         now = cls._now_description()
         if not inbox_items:
             return (
                 f"Aktuelle Zeit: {now}. Es liegen keine neuen Hörerwünsche vor. "
-                "Baue trotzdem ein sinnvolles Programm für diesen Durchlauf."
+                f"Baue trotzdem ein sinnvolles Programm für diesen Durchlauf. {length}"
             )
         wishes = "\n".join(f"{i + 1}. {text}" for i, (_path, text) in enumerate(inbox_items) if text)
-        return f"Aktuelle Zeit: {now}. Neue Hörerwünsche:\n{wishes}"
+        return f"Aktuelle Zeit: {now}. {length}\nNeue Hörerwünsche:\n{wishes}"
 
     def _archive_inbox(self, inbox_items: list[tuple[Path, str]]) -> None:
         self.processed_dir.mkdir(parents=True, exist_ok=True)
