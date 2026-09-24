@@ -24,6 +24,14 @@ def wait_for(predicate, timeout: float = 5.0) -> bool:
     return False
 
 
+def join_transcription(call_id: str, timeout: float = 5.0) -> None:
+    """Waits for the background STT thread of `call_id` to finish (it's done updating the call)."""
+    for thread in threading.enumerate():
+        if thread.name == f"stt-{call_id}":
+            thread.join(timeout)
+            assert not thread.is_alive()
+
+
 class FakeSTT:
     def __init__(self):
         self.release = threading.Event()
@@ -59,6 +67,12 @@ def client(config_env: Path, fake_tts, monkeypatch):
     with TestClient(main.app) as c:
         c.stt = stt
         c.holder = holder
+        # The migrated wish is dispatched on start with the initial (empty) LLM. Let that run end
+        # before a test swaps the LLM: a dispatch run creates its LLM once and then also takes
+        # calls arriving meanwhile, so a still-running startup run would answer them.
+        calls = c.app.state.calls
+        assert wait_for(lambda: calls.all() and calls.all()[-1]["status"] == "routed")
+        assert c.app.state.desk_runner.wait_idle("dispatch", 5)
         yield c
 
 
@@ -105,7 +119,8 @@ def test_voice_call_transcribes_in_the_background_and_waits_for_confirmation(cli
     assert call["status_text"] == "Wird transkribiert…" and "audio_file" not in call
 
     client.stt.release.set()
-    assert wait_for(lambda: _call(client, call["id"])["status"] == "awaiting_confirmation")
+    join_transcription(call["id"])
+    assert _call(client, call["id"])["status"] == "awaiting_confirmation"
     assert _call(client, call["id"])["text"] == "Als Nächstes bitte Queen"
     assert client.post(f"/api/calls/{call['id']}/retry").status_code == 409
 
@@ -132,7 +147,7 @@ def test_withdraw_a_call(client):
     call = client.post("/api/calls/voice", files={"file": ("rec.webm", b"audio", "audio/webm")}).json()
     assert client.delete(f"/api/calls/{call['id']}").json()["status"] == "removed"
     client.stt.release.set()
-    time.sleep(0.2)
+    join_transcription(call["id"])
     assert _call(client, call["id"])["status"] == "removed"
 
 

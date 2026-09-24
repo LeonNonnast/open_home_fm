@@ -28,7 +28,7 @@
     },
     news: {
       label: "Nachrichtenredaktion",
-      numbers: ["lead_minutes", "max_delay_minutes", "max_tool_iterations"],
+      numbers: ["lead_minutes", "max_delay_minutes", "note_repeat_hours", "max_tool_iterations"],
       bools: ["intro"],
       contextPlugins: false,
       started: "Schreibt die nächste Ausgabe – das dauert meist 10–60 Sekunden.",
