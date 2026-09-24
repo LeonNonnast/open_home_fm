@@ -6,6 +6,7 @@
 # accordingly. Safe to re-run - existing answers are offered as defaults.
 #
 # Usage (already cloned):  ./install.sh
+# Quick update only:       ./install.sh --update   (pull, dependencies, service restart - no questions)
 # Usage (one-liner):       bash -c "$(curl -fsSL https://raw.githubusercontent.com/LeonNonnast/open_home_fm/main/install.sh)"
 #
 # Note: use `bash -c "$(curl ...)"`, not `curl ... | bash` - piping into bash consumes stdin
@@ -24,8 +25,9 @@ if [ ! -f "pyproject.toml" ]; then
   fi
   TARGET_DIR="${OPEN_HOME_FM_DIR:-$PWD/open_home_fm}"
   if [ -d "$TARGET_DIR/.git" ]; then
-    echo "==> Bestehende Installation in $TARGET_DIR gefunden, aktualisiere..."
-    git -C "$TARGET_DIR" pull --ff-only
+    # Not pulled here: the local config.yaml is usually modified (web UI), which a plain pull
+    # refuses - the local installer's quick update handles that.
+    echo "==> Bestehende Installation in $TARGET_DIR gefunden."
   else
     echo "==> Klone open home fm nach $TARGET_DIR ..."
     git clone "$REPO_URL" "$TARGET_DIR"
@@ -74,6 +76,92 @@ ask_yes_no() {
   answer="${answer:-$default}"
   [[ "$answer" =~ ^[yY] ]] && echo "true" || echo "false"
 }
+
+# ---------------------------------------------------------------------------
+# 0. Quick update (existing installation)
+# ---------------------------------------------------------------------------
+SERVICE_NAME="open-home-fm"
+
+restart_service() {
+  if ! systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
+    note "Kein systemd-Service '$SERVICE_NAME' gefunden - App selbst neu starten:"
+    note ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    return
+  fi
+  info "Service $SERVICE_NAME neu starten"
+  sudo systemctl restart "$SERVICE_NAME"
+  sleep 3
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    note "Läuft. Live-Log: journalctl -u $SERVICE_NAME -f"
+  else
+    echo "${BOLD}Service läuft nicht!${RESET} Letzte Log-Zeilen:"
+    journalctl -u "$SERVICE_NAME" -n 20 --no-pager || true
+  fi
+}
+
+finish_update() {
+  info "Python-Abhängigkeiten aktualisieren"
+  .venv/bin/pip install -q -e .
+  restart_service
+  info "Update fertig ($(git log --oneline -1))."
+}
+
+quick_update() {
+  info "Schnell-Update"
+  # config/config.yaml is tracked but rewritten by the web UI, so a plain pull would refuse to
+  # run. Set the local version aside, pull, then lay the local values over the new defaults -
+  # user settings survive, options added upstream arrive with their defaults.
+  local backup=""
+  if ! git diff --quiet -- config/config.yaml; then
+    backup="$(mktemp)"
+    cp config/config.yaml "$backup"
+    git checkout -- config/config.yaml
+  fi
+  if ! git pull --ff-only; then
+    [ -n "$backup" ] && cp "$backup" config/config.yaml && rm -f "$backup"
+    echo "git pull fehlgeschlagen - lokale Änderungen an anderen Dateien? Details: git status" >&2
+    exit 1
+  fi
+  if [ -n "$backup" ]; then
+    .venv/bin/python3 - "$backup" <<'PYEOF'
+import sys
+from pathlib import Path
+
+import yaml
+
+
+def merge(defaults, local):
+    if isinstance(defaults, dict) and isinstance(local, dict):
+        return {**defaults, **{key: merge(defaults.get(key), value) for key, value in local.items()}}
+    return local
+
+
+config_path = Path("config/config.yaml")
+defaults = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+local = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+config_path.write_text(yaml.safe_dump(merge(defaults, local), allow_unicode=True, sort_keys=False), encoding="utf-8")
+PYEOF
+    rm -f "$backup"
+    note "Lokale Einstellungen in config/config.yaml übernommen."
+  fi
+  # The pull may have changed this very script - continue in the new version.
+  exec bash "$ROOT_DIR/install.sh" --finish-update
+}
+
+case "${1:-}" in
+  --finish-update) finish_update; exit 0 ;;
+  --update) quick_update ;;
+esac
+
+if [ -d ".venv" ] && [ -f ".env" ]; then
+  echo ""
+  info "Bestehende Installation gefunden"
+  echo "  1) Schnell-Update: neuen Code holen, Abhängigkeiten, Service neu starten - Standard"
+  echo "  2) Komplettes Setup: alle Fragen erneut durchgehen"
+  if [ "$(ask "Auswahl" "1")" != "2" ]; then
+    quick_update
+  fi
+fi
 
 echo ""
 echo "${BOLD}open home fm - Setup${RESET}"
@@ -441,8 +529,13 @@ if [ "${#OPEN_ITEMS[@]}" -gt 0 ]; then
   echo ""
 fi
 info "Fertig!"
-note "Start: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
+if systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
+  restart_service
+else
+  note "Start: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
+fi
 note "Web-UI dann unter http://<host>:8000/"
+note "Später aktualisieren: ./install.sh --update"
 if [ "$MUSIC_PROVIDER" = "spotify" ]; then
   note "Spotify-Login erneuern (z.B. anderer Account): .venv/bin/python scripts/spotify_login.py --force"
 fi

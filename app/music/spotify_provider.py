@@ -53,8 +53,16 @@ def create_spotify_oauth(
 class SpotifyMusicProvider(MusicProvider):
     name = "spotify"
 
-    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, device_name: str):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+        device_name: str,
+        volume_percent: int | None = 90,
+    ):
         self.device_name = device_name
+        self.volume_percent = volume_percent
         auth_manager = create_spotify_oauth(client_id, client_secret, redirect_uri)
         if auth_manager.cache_handler.get_cached_token() is None:
             logger.error("No Spotify login stored - Spotify calls will fail. %s", LOGIN_HINT)
@@ -131,6 +139,17 @@ class SpotifyMusicProvider(MusicProvider):
             self.sp.transfer_playback(device_id=target.id, force_play=False)
         logger.info("Playing on Spotify device %s: %s - %s", target.name, track.artist, track.title)
         self.sp.start_playback(device_id=target.id, uris=[track.uri])
+        self._apply_volume(target)
+
+    def _apply_volume(self, target: Device) -> None:
+        # Set on every track, not just once: the moderator's TTS plays at a fixed level via ffplay,
+        # so the music has to come back to the same level for the two to stay balanced.
+        if self.volume_percent is None:
+            return
+        try:
+            self.sp.volume(self.volume_percent, device_id=target.id)
+        except Exception:
+            logger.warning("Could not set Spotify volume to %d%%", self.volume_percent, exc_info=True)
 
     def play_and_wait(self, track: Track, device: Device | None = None) -> None:
         self.play(track, device)

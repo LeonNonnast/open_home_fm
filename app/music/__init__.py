@@ -21,6 +21,7 @@ def create_music_provider(config: dict) -> MusicProvider:
                 "SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback"
             ),
             device_name=spotify_cfg.get("device_name", "open-home-fm"),
+            volume_percent=spotify_cfg.get("volume_percent", 90),
         )
 
     if provider == "local":

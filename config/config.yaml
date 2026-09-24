@@ -34,6 +34,9 @@ music:
   spotify:
     # Spotify Connect device name exposed by raspotify (see /etc/raspotify/conf).
     device_name: "open-home-fm"
+    # Playback volume (0-100) set whenever a track starts, keeps music and moderator balanced.
+    # null leaves the device volume alone.
+    volume_percent: 90
   local:
     library_path: "data/library"
 

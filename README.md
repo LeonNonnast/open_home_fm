@@ -125,6 +125,18 @@ Web-UI dann unter `http://<pi-ip>:8000/` erreichbar. Der Installer ist beliebig 
 ausführbar (z.B. um die Musikquelle später zu wechseln) und schlägt dabei die zuletzt
 eingetragenen Werte als Default vor.
 
+### Update
+
+```
+./install.sh --update
+```
+
+Holt den neuen Code, aktualisiert die Python-Abhängigkeiten und startet den systemd-Service
+`open-home-fm` neu - ohne Rückfragen. Über das Web-UI geänderte Einstellungen in
+`config/config.yaml` bleiben erhalten, neu hinzugekommene Optionen werden mit ihren Defaults
+ergänzt. Ein normales `./install.sh` bietet bei bestehender Installation dasselbe Schnell-Update
+als Standard an.
+
 ### Manuelles Setup / Details
 
 1. **System-Pakete**: `sudo apt install python3-venv ffmpeg` (ffmpeg liefert `ffplay`, das
