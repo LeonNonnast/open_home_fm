@@ -2,6 +2,8 @@
 
 - music: appends program blocks to the queue whenever the program runs low (see
   app/scheduler.py) and keeps the reserve for the filler program fresh.
+- news: prepares a bulletin `lead_minutes` before every slot (:00 full, :30 short by default)
+  from the news/weather plugins and the news mailbox - see app/program/news.py.
 - dispatch ("Leitstelle"): runs right away for every listener call and routes it (lights,
   "als Nächstes", wish mailbox, news mailbox) - see app/agent/dispatch.py.
 
@@ -44,12 +46,27 @@ from app.config import (
 from app.music import create_music_provider
 from app.program.calls import CallStore, hhmm
 from app.program.mailboxes import news_mailbox, wish_mailbox
+from app.program.news import (
+    FORMAT_LABELS,
+    FORMAT_SOURCES,
+    FORMAT_WORDS,
+    PLACEMENTS,
+    SOURCE_PLUGINS,
+    SOURCES,
+    NewsSession,
+    hhmm_local,
+    load_last_bulletin,
+    next_slot,
+    normalize_slots,
+    notes_for,
+    prepared_for,
+)
 from app.program.queue import ProgramQueue, QueueItem
 
 logger = logging.getLogger(__name__)
 
-DESKS = ("music", "dispatch")
-DESK_LABELS = {"music": "Musikredaktion", "dispatch": "Leitstelle"}
+DESKS = ("music", "news", "dispatch")
+DESK_LABELS = {"music": "Musikredaktion", "news": "Nachrichtenredaktion", "dispatch": "Leitstelle"}
 
 # Fallbacks for keys missing from desks.<name> (the real defaults live in config/config.yaml).
 DESK_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -65,6 +82,18 @@ DESK_DEFAULTS: dict[str, dict[str, Any]] = {
         "plugins": ["get_weather", "get_favorite_songs", "get_news_headlines"],
         "context_plugins": ["get_weather"],
     },
+    "news": {
+        "enabled": True,
+        "slots": [{"minute": "00", "format": "full"}, {"minute": "30", "format": "short"}],
+        "lead_minutes": 5,
+        "placement": "after_song",
+        "max_delay_minutes": 15,
+        "sources": ["news", "weather", "notes"],
+        "intro": True,
+        "max_tool_iterations": 8,
+        "history_runs": 0,
+        "plugins": [],
+    },
     "dispatch": {
         "enabled": True,
         "allow_interrupt": True,
@@ -75,7 +104,8 @@ DESK_DEFAULTS: dict[str, dict[str, Any]] = {
         "plugins": ["control_hue_lights", "get_weather", "get_news_headlines", "get_favorite_songs"],
     },
 }
-BACKOFF_SECONDS = {"music": (60, 120, 300, 600), "dispatch": (10, 30, 60)}
+# The news desk retries within the few lead minutes before its slot (the scheduler re-requests).
+BACKOFF_SECONDS = {"music": (60, 120, 300, 600), "news": (60, 120, 300, 600), "dispatch": (10, 30, 60)}
 # Sent once when the dispatch desk answered a call with plain text and no tool.
 NO_ACTION_NUDGE = (
     "Du hast noch kein Tool benutzt, beim Hörer ist also nichts angekommen. Nutze die Tools: reply für eine "
@@ -97,6 +127,8 @@ SETTING_BOUNDS: dict[str, tuple[int, int]] = {
     "min_minutes_between_interrupts": (0, 240),
     "reply_expires_minutes": (1, 1440),
     "wish_default_valid_hours": (1, 336),
+    "lead_minutes": (1, 15),
+    "max_delay_minutes": (1, 30),
 }
 
 
@@ -117,6 +149,17 @@ def _sane_settings(name: str, settings: dict[str, Any]) -> dict[str, Any]:
                 continue
         elif isinstance(default, bool):
             if isinstance(value, bool):
+                continue
+        elif key == "slots":
+            slots = normalize_slots(value)
+            if slots is not None:
+                settings[key] = slots
+                continue
+        elif key == "sources":
+            if isinstance(value, list) and all(v in SOURCES for v in value):
+                continue
+        elif key == "placement":
+            if value in PLACEMENTS:
                 continue
         elif isinstance(default, list):
             if isinstance(value, list):
@@ -209,6 +252,7 @@ class DeskRunner:
         self.player = player  # QueuePlayer, for "what's on air" and the fill level; optional
         self.play_history_path = root_dir / "data" / "playlists" / "play_history.json"
         self.reserve_path = root_dir / "data" / "reserve.json"
+        self.news_last_path = root_dir / "data" / "news_last.json"
         self.transcripts_dir = root_dir / "data" / "transcripts"
         self.plugins_dir = root_dir / "plugins"
         self.wishes = wish_mailbox(root_dir / "data")
@@ -328,6 +372,8 @@ class DeskRunner:
         """One synchronous run of desk `name` (no locking - use request() for that)."""
         if name == "music":
             return self._run_music(trigger)
+        if name == "news":
+            return self._run_news(trigger)
         if name == "dispatch":
             return self._run_dispatch(trigger)
         raise ValueError(f"Unknown desk: {name}")
@@ -570,6 +616,148 @@ class DeskRunner:
             titles = ", ".join(f"{t.title}{f' ({t.artist})' if t.artist else ''}" for t in sample)
             blocks.append(f"- {names.get(playlist_id, playlist_id)} (id={playlist_id}): {titles or 'leer'}")
         return "\n".join(blocks)
+
+    # ---------- news desk ----------
+
+    def next_news_slot(self, config: dict | None = None) -> tuple[datetime, str] | None:
+        config = config or load_config()
+        return next_slot(config, DeskConfig.from_config("news", config).settings)
+
+    def news_prepared(self, slot: datetime) -> bool:
+        return prepared_for(self.queue, slot) is not None
+
+    def last_bulletin(self) -> dict | None:
+        last = load_last_bulletin(self.news_last_path)
+        if last is None:
+            return None
+        item = self.queue.get(last.get("item_id") or "")
+        return {**last, "status": item.status if item else None}
+
+    def _run_news(self, trigger: str) -> dict:
+        """Prepares the bulletin of the next slot (in the broadcast window): fetches the sources,
+        hands the format to the LLM, which calls schedule_news once."""
+        config = load_config()
+        desk = DeskConfig.from_config("news", config)
+        s = desk.settings
+        target = next_slot(config, s)
+        if target is None:
+            return {"desk": "news", "trigger": trigger, "error": None, "items": [],
+                    "final_message": "Keine Ausgabe im Sendefenster der nächsten 48 Stunden."}
+        slot, fmt = target
+        sources = set(s["sources"])
+        tts = create_tts_engine(config, resolve_path(config["audio"]["jingle_cache_dir"]))
+        llm = create_llm_provider(config)
+        offered = notes_for(fmt, self.news_notes) if "notes" in sources else ([], [])
+        session = NewsSession(slot, fmt, s, self.queue, self.news_notes, tts, offered, self.news_last_path)
+
+        registry = ToolRegistry()
+        registry.register(session.tool())
+        self._register_plugins(registry, desk, config)
+        context = self._news_context(config, sources, fmt)
+
+        messages = [LLMMessage(role="system", content=load_system_prompt("news"))]
+        if context:
+            messages.append(LLMMessage(role="system", content=context))
+        messages.append(LLMMessage(role="user", content=self._news_user_message(slot, fmt, s, offered)))
+        final_text, error = self._llm_loop(llm, messages, None, registry, desk.max_tool_iterations)
+        if error is None and session.item is None:
+            # Counts as a failure (backoff): the scheduler asks again while the slot is still ahead.
+            error = "Die Nachrichtenredaktion hat keine Ausgabe eingeplant."
+
+        item = session.item
+        script = {"items": [item.id] if item else [], "segments": [asdict(seg) for seg in item.segments] if item else []}
+        transcript = save_transcript(
+            self.transcripts_dir, messages, final_text, script, error=error, desk="news", trigger=trigger,
+            inputs=f"Ausgabe {hhmm_local(slot)} ({FORMAT_LABELS[fmt]})",
+        )
+        return {
+            "desk": "news", "trigger": trigger, "final_message": final_text, "error": error,
+            "items": script["items"], "slot": slot.isoformat(), "format": fmt,
+            "notes_used": session.used_notes, "transcript_id": transcript.stem,
+        }
+
+    def _news_context(self, config: dict, sources: set[str], fmt: str) -> str:
+        """The news and weather plugins' results for this bulletin (always fetched fresh)."""
+        wanted = {SOURCE_PLUGINS[s]: s for s in ("news", "weather") if s in sources}
+        if not wanted:
+            return ""
+        headlines, forecast = FORMAT_SOURCES[fmt]
+        args = {"news": {"limit": headlines}, "weather": {"forecast": True} if forecast else {}}
+        disabled = config.get("plugins", {}).get("disabled")
+        tools = {t.name: t for t in discover_plugins(self.plugins_dir, disabled) if t.name in wanted}
+        titles = {"news": "Schlagzeilen", "weather": "Wetter" + (" mit Vorhersage" if forecast else " (jetzt)")}
+        blocks = []
+        for name, source in wanted.items():
+            tool = tools.get(name)
+            if tool is None:
+                blocks.append(f"### {titles[source]}\nnicht verfügbar (Plugin {name} fehlt oder ist ausgeschaltet) - "
+                              "diesen Teil weglassen.")
+                continue
+            try:
+                try:
+                    result = tool.func(**args[source])
+                except TypeError:  # an older plugin without these arguments
+                    result = tool.func()
+            except Exception as exc:
+                logger.warning("News source %s failed: %s", name, exc)
+                result = f"nicht verfügbar ({exc}) - diesen Teil weglassen."
+            blocks.append(f"### {titles[source]}\n{result}")
+        return "Quellen für diese Ausgabe (automatisch geladen, kein Tool-Aufruf nötig):\n\n" + "\n\n".join(blocks)
+
+    def _news_user_message(self, slot: datetime, fmt: str, s: dict, offered: tuple[list[dict], list[dict]]) -> str:
+        sources = set(s["sources"])
+        low, high = FORMAT_WORDS[fmt]
+        minutes = "ca. 2-3 Minuten" if fmt == "full" else "ca. 30-60 Sekunden"
+        parts = [f"Aktuelle Zeit: {now_description()}."]
+        if fmt == "full":
+            spec = [
+                f"Bereite die Nachrichten um {hhmm_local(slot)} Uhr vor. Format: AUSFÜHRLICH ({minutes}, "
+                f"ca. {low}-{high} Wörter).",
+                "- mehrere Schlagzeilen (4-6), je 1-2 Sätze" if "news" in sources else None,
+                "- das Wetter mit Vorhersage" if "weather" in sources else None,
+                "- alle Hinweise aus dem Meldungs-Postfach unten" if "notes" in sources else None,
+            ]
+        else:
+            spec = [
+                f"Bereite die Kurznachrichten um {hhmm_local(slot)} Uhr vor. Format: KURZ ({minutes}, "
+                f"ca. {low}-{high} Wörter).",
+                "- 2-3 Schlagzeilen, je ein Satz" if "news" in sources else None,
+                "- das Wetter jetzt, ein Satz" if "weather" in sources else None,
+                "- nur die neuen Hinweise aus dem Meldungs-Postfach unten" if "notes" in sources else None,
+            ]
+        parts.append("\n".join(line for line in spec if line))
+        if s.get("intro", True):
+            parts.append("Die Einleitung („Die Nachrichten um …“) setzt der Sender automatisch davor - beginne "
+                         "direkt mit der ersten Meldung.")
+
+        if "notes" in sources:
+            mandatory, optional = offered
+
+            def line(note: dict) -> str:
+                author = f" (von {note['author']})" if note.get("author") else ""
+                until = f", gültig bis {hhmm(note['valid_until'], '%d.%m. %H:%M')}" if note.get("valid_until") else ""
+                aired = " - schon einmal gemeldet" if note["status"] == "used" else ""
+                return f"- {note.get('text', '')}{author} [note_id={note['id']}{until}{aired}]"
+
+            if mandatory:
+                parts.append("Hinweise aus dem Meldungs-Postfach (von Hörern, alle erwähnen, als lokale Meldung "
+                             "formulieren):\n" + "\n".join(line(n) for n in mandatory))
+            else:
+                parts.append("Keine neuen Hinweise im Meldungs-Postfach.")
+            if optional:
+                parts.append("Schon gemeldet, noch gültig (nur erwähnen, wenn es gerade wieder wichtig ist, z.B. "
+                             "weil es bald so weit ist - dann note_ids mitgeben):\n" + "\n".join(line(n) for n in optional))
+
+        last = load_last_bulletin(self.news_last_path)
+        if last:
+            parts.append(
+                f"Die letzte Ausgabe ({hhmm_local(last.get('slot'))} Uhr, {FORMAT_LABELS.get(last.get('format'), '')}) "
+                f"lautete:\n„{last['text']}“\nWiederhole sie nicht wortgleich: gleiche Themen neu formulieren, "
+                "Neues nach vorn, Überholtes weglassen."
+            )
+        parts.append("Rufe dann genau einmal schedule_news mit dem kompletten Sprechtext auf: Fließtext zum "
+                     "Vorlesen, keine Überschriften, keine Aufzählungszeichen, kein Markdown.")
+        return "\n\n".join(parts)
 
     # ---------- dispatch desk ----------
 

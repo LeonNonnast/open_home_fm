@@ -19,7 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,8 @@ class ProgramQueue:
         self.path = path
         self.cursor_path = cursor_path
         self._lock = threading.RLock()
+        # Called with every item next_item() expires (the player logs missed news). Must not raise.
+        self.on_expire: Callable[[QueueItem], None] | None = None
 
     # ---------- persistence ----------
 
@@ -210,6 +212,7 @@ class ProgramQueue:
             items = self._load()
             changed = False
             candidates = []
+            expired: list[QueueItem] = []
             for item in items:
                 if item.status not in ACTIVE_STATUSES:
                     continue
@@ -220,6 +223,7 @@ class ProgramQueue:
                 if item.is_expired(now):
                     self._set_status(item, "expired", now, note="abgelaufen")
                     logger.info("Queue item %s (%s) expired at %s", item.id, item.lane, item.expires_at)
+                    expired.append(item)
                     changed = True
                     continue
                 not_before = _parse(item.not_before)
@@ -228,10 +232,16 @@ class ProgramQueue:
                 candidates.append(item)
             if changed:
                 self._save(items)
-            if not candidates:
-                return None
-            candidates.sort(key=lambda i: (LANE_PRIORITY.get(i.lane, len(LANES)), i.status != "playing", i.created_at))
-            return candidates[0]
+        for item in expired:
+            if self.on_expire is not None:
+                try:
+                    self.on_expire(item)
+                except Exception:
+                    logger.exception("Expiry listener failed for %s", item.id)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda i: (LANE_PRIORITY.get(i.lane, len(LANES)), i.status != "playing", i.created_at))
+        return candidates[0]
 
     def start_segment(self, item_id: str, index: int) -> bool:
         """Marks segment `index` as on air. False (and nothing changed) when the item is no
@@ -362,18 +372,58 @@ class ProgramQueue:
 
     def start_estimates(self, current_remaining: float = 0.0, now: datetime | None = None) -> dict[str, datetime]:
         """Estimated start of every queued item in play order, after the rest of the segment on
-        air (`current_remaining`, from the player). A playing item has no estimate; an item held
-        until `not_before` (e.g. the broadcast start) starts no earlier than that."""
+        air (`current_remaining`, from the player). A playing item has no estimate. An item held
+        until `not_before` (a news slot, the broadcast start) starts at the first segment boundary
+        after that - the player picks again between every two segments - or at `not_before`
+        itself once nothing else is planned."""
         now = now or _now()
         cursor = now + timedelta(seconds=max(0.0, current_remaining))
         starts: dict[str, datetime] = {}
+        due: list[QueueItem] = []
+        held: list[tuple[datetime, QueueItem]] = []
         for item in self.active_items():
             not_before = _parse(item.not_before)
+            if not_before is not None and not_before > cursor:
+                held.append((not_before, item))
+            else:
+                due.append(item)
+        held.sort(key=lambda h: (h[0], LANE_PRIORITY.get(h[1].lane, len(LANES)), h[1].created_at))
+
+        def seconds(item: QueueItem) -> timedelta:
+            return timedelta(seconds=sum(s.estimated_seconds() for s in item.remaining_segments()))
+
+        def release() -> None:
+            nonlocal cursor
+            while held and held[0][0] <= cursor:
+                _, item = held.pop(0)
+                if item.status != "playing":
+                    starts[item.id] = cursor
+                cursor += seconds(item)
+
+        for item in due:
+            for index, segment in enumerate(item.remaining_segments()):
+                release()
+                if index == 0 and item.status != "playing":
+                    starts[item.id] = cursor
+                cursor += timedelta(seconds=segment.estimated_seconds())
+        for not_before, item in held:
+            cursor = max(cursor, not_before)
             if item.status != "playing":
-                starts[item.id] = max(cursor, not_before) if not_before else cursor
-            if not_before is None or not_before <= cursor:
-                cursor += timedelta(seconds=sum(s.estimated_seconds() for s in item.remaining_segments()))
+                starts[item.id] = cursor
+            cursor += seconds(item)
         return starts
+
+    def due_items(self, lanes: tuple[str, ...], now: datetime | None = None) -> list[QueueItem]:
+        """Queued items of `lanes` that may play now (their `not_before` passed, not expired)."""
+        now = now or _now()
+        result = []
+        for item in self.items():
+            if item.lane not in lanes or item.status != "queued" or item.is_expired(now):
+                continue
+            not_before = _parse(item.not_before)
+            if not_before is None or not_before <= now:
+                result.append(item)
+        return result
 
     def remaining_program_seconds(self, current_remaining: float = 0.0, now: datetime | None = None) -> float:
         """How long until the program runs out: queued segments of the `program` lane and of the

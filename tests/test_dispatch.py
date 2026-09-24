@@ -224,6 +224,22 @@ def test_news_note_is_stored(env):
     assert datetime.fromisoformat(note["valid_until"]) - datetime.now(timezone.utc) <= timedelta(days=14)
 
 
+def test_news_note_shows_its_bulletin_and_returns_if_it_did_not_air(env):
+    from app.program.queue import QueueItem, Segment
+
+    call = env.dispatch("Morgen ist Sperrmüll", [[("note_for_news", {"text": "Morgen ist Sperrmüll"})], "ok"])
+    note_id = call["actions"][0]["note_id"]
+    item = env.runner.queue.append(QueueItem.new("news", "news", [Segment("jingle", "N", "/n.wav")]))
+    env.runner.news_notes.mark_in_bulletin([note_id], item.id, "2026-09-24T06:00:00+00:00")
+    env.runner.calls.sync()
+    [action] = env.runner.calls.get(call["id"])["actions"]
+    assert action["status"] == "used" and action["note"].startswith("in den Nachrichten ")
+    env.runner.queue.remove(item.id)
+    env.runner.calls.sync()
+    [action] = env.runner.calls.get(call["id"])["actions"]
+    assert action["status"] == "noted" and action["note"] is None
+
+
 def test_episodes_need_a_source_that_can_play_them(env):
     env.dispatch("Spiel die Lage der Nation", [
         [("play_next", {"episode_query": "Lage der Nation"})],

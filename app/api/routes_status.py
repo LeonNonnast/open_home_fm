@@ -34,6 +34,7 @@ def get_status(request: Request) -> dict:
         desks[d["name"]] = {k: d.get(k) for k in (
             "state", "enabled", "last_success_at", "consecutive_failures", "last_error", "backoff_until",
             "next_trigger_at", "fill", "open_calls", "last_run_at",
+            "next_slot_at", "next_slot_format", "prepare_at", "prepared", "last_bulletin", "open_notes", "slots",
         )}
     return {
         "on_air": is_broadcast_time(config),

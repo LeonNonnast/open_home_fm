@@ -1,8 +1,10 @@
 """Desks: status, settings, prompt and "run now" (through the scheduler, i.e. lock + cap)."""
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.agent.desk import DESKS, SETTING_BOUNDS, DeskConfig
 from app.config import (
@@ -15,6 +17,7 @@ from app.config import (
     update_config,
 )
 from app.program.filler import load_reserve
+from app.program.news import MAX_SLOTS
 
 router = APIRouter(prefix="/api/desks", tags=["desks"])
 
@@ -61,7 +64,42 @@ class DispatchSettingsPatch(BaseModel):
     plugins: list[str] = None
 
 
-PATCH_MODELS = {"music": DeskSettingsPatch, "dispatch": DispatchSettingsPatch}
+class NewsSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    minute: str = Field(pattern=r"^[0-5][0-9]$")  # "00".."59"
+    format: Literal["full", "short"]
+
+
+class NewsSettingsPatch(BaseModel):
+    """What PATCH /api/desks/news accepts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = None
+    slots: list[NewsSlot] = Field(None, min_length=1, max_length=MAX_SLOTS)
+    lead_minutes: int = _bounded("lead_minutes")
+    placement: Literal["after_song", "on_time"] = None
+    max_delay_minutes: int = _bounded("max_delay_minutes")
+    sources: list[Literal["news", "weather", "notes"]] = None
+    intro: bool = None
+    max_tool_iterations: int = _bounded("max_tool_iterations")
+    plugins: list[str] = None
+
+    @field_validator("slots")
+    @classmethod
+    def _unique_minutes(cls, slots):
+        if slots is not None and len({s.minute for s in slots}) != len(slots):
+            raise ValueError("Jede Minute darf nur einen Slot haben.")
+        return sorted(slots, key=lambda s: s.minute) if slots is not None else slots
+
+    @field_validator("sources")
+    @classmethod
+    def _unique_sources(cls, sources):
+        return list(dict.fromkeys(sources)) if sources is not None else sources
+
+
+PATCH_MODELS = {"music": DeskSettingsPatch, "news": NewsSettingsPatch, "dispatch": DispatchSettingsPatch}
 
 
 def _checked(name: str) -> str:
@@ -79,6 +117,8 @@ def _desk_view(request: Request, name: str) -> dict:
         reserve = load_reserve(runner.reserve_path)
         data["reserve"] = {"updated_at": reserve["updated_at"], "count": len(reserve["tracks"])}
         data["open_wishes"] = len(runner.wishes.open())
+    elif name == "news" and data["settings"].get("placement") == "on_time":
+        data["placement_note"] = "„Pünktlich“ kommt mit dem Unterbrechen – bis dahin laufen die Nachrichten nach dem Song."
     return data
 
 
@@ -108,6 +148,8 @@ def patch_desk(name: str, request: Request, body: dict = Body(...)) -> dict:
                    "< max_queued_program_minutes).",
         )
     update_config({"desks": {name: values}})
+    if name == "news":
+        request.app.state.scheduler.plan_news_jobs()
     return _desk_view(request, name)
 
 

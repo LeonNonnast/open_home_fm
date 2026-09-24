@@ -11,8 +11,10 @@
     wish: "Hörerwunsch",
     call: "Zwischenruf",
     poll: "Nachzügler",
+    slot: "Sendezeit",
+    catch_up: "nachgeholt",
   };
-  const MAIL_STATUS = { noted: "offen", used: "eingeplant", expired: "verfallen", removed: "verworfen" };
+  const MAIL_STATUS = { noted: "offen", used: "eingeplant", expired: "verfallen", removed: "verworfen", repeats: "wird wiederholt" };
 
   const DESKS = {
     music: {
@@ -23,6 +25,15 @@
       started: "Plant jetzt – das dauert meist 10–60 Sekunden.",
       done: () => "Fertig – das Programm ist eingeplant.",
       toggled: (on) => (on ? "Musikredaktion eingeschaltet." : "Musikredaktion ausgeschaltet – es läuft nur noch Füllprogramm."),
+    },
+    news: {
+      label: "Nachrichtenredaktion",
+      numbers: ["lead_minutes", "max_delay_minutes", "max_tool_iterations"],
+      bools: ["intro"],
+      contextPlugins: false,
+      started: "Schreibt die nächste Ausgabe – das dauert meist 10–60 Sekunden.",
+      done: (d) => (d.prepared && d.next_slot_at ? `Fertig – die Ausgabe ${hhmm(new Date(d.next_slot_at))} ist eingeplant.` : "Fertig."),
+      toggled: (on) => (on ? "Nachrichtenredaktion eingeschaltet." : "Nachrichtenredaktion ausgeschaltet – keine Nachrichten."),
     },
     dispatch: {
       label: "Leitstelle",
@@ -65,6 +76,21 @@
     $("dispatch-lines").innerHTML = lineHtml(lines);
   }
 
+  function renderNewsCard(d, summary) {
+    const [first, ...rest] = summary.lines;
+    $("news-main").textContent = first?.text || "";
+    const lines = [...rest];
+    if (d.followup_pending) lines.push({ text: "Ein weiterer Lauf ist vorgemerkt." });
+    if (d.placement_note) lines.push({ text: d.placement_note });
+    $("news-lines").innerHTML = lineHtml(lines);
+    const last = d.last_bulletin;
+    $("news-last").hidden = !last?.text;
+    if (last?.text) {
+      $("news-last-meta").textContent = `${fmtWhen(last.slot)} · ${NEWS_FORMATS[last.format] || ""}`;
+      $("news-last-text").textContent = last.text;
+    }
+  }
+
   function renderCard(name) {
     const d = state.desks[name];
     if (!d) return;
@@ -74,6 +100,7 @@
     const enabled = $(`${name}-enabled`);
     if (document.activeElement !== enabled) enabled.checked = d.enabled !== false;
     if (name === "music") renderMusicCard(d, summary);
+    else if (name === "news") renderNewsCard(d, summary);
     else renderDispatchCard(d, summary);
     $(`${name}-run`).disabled = d.state === "running";
   }
@@ -150,7 +177,75 @@
     const settings = state.desks[name]?.settings || {};
     for (const field of DESKS[name].numbers) $(`${name}-s-${field}`).value = settings[field] ?? "";
     for (const field of DESKS[name].bools) $(`${name}-s-${field}`).checked = !!settings[field];
+    if (name === "news") {
+      renderSlots(settings.slots || []);
+      $("news-s-placement").value = settings.placement || "after_song";
+      const sources = new Set(settings.sources || []);
+      for (const input of document.querySelectorAll("#news-sources input")) input.checked = sources.has(input.value);
+    }
     renderPlugins(name, settings);
+  }
+
+  // ---------- news: slots editor ----------
+
+  function slotRow(slot, index) {
+    const minute = Number(slot.minute) || 0;
+    return `
+      <li>
+        <span class="at" aria-hidden="true">hh :</span>
+        <input type="number" min="0" max="59" step="1" inputmode="numeric" value="${pad(minute)}" data-slot="minute"
+          id="news-slot-${index}-m" aria-label="Minute der Sendezeit ${index + 1}">
+        <select data-slot="format" id="news-slot-${index}-f" aria-label="Format der Sendezeit ${index + 1}">
+          <option value="full"${slot.format === "full" ? " selected" : ""}>ausführlich (2–3 min)</option>
+          <option value="short"${slot.format === "short" ? " selected" : ""}>kurz (30–60 s)</option>
+        </select>
+        <button class="btn ghost small" type="button" data-remove-slot aria-label="Sendezeit ${index + 1} entfernen">Entfernen</button>
+      </li>`;
+  }
+
+  function readSlots() {
+    return [...document.querySelectorAll("#news-slots li")].map((li) => ({
+      minute: li.querySelector('[data-slot="minute"]').value,
+      format: li.querySelector('[data-slot="format"]').value,
+    }));
+  }
+
+  function renderSlots(slots) {
+    $("news-slots").innerHTML = slots.length ? slots.map(slotRow).join("") : "";
+    $("news-add-slot").disabled = slots.length >= 12;
+  }
+
+  function initSlots() {
+    $("news-add-slot").addEventListener("click", () => {
+      const slots = readSlots();
+      const used = new Set(slots.map((s) => Number(s.minute)));
+      const minute = [0, 30, 15, 45].find((m) => !used.has(m)) ?? 0;
+      renderSlots([...slots, { minute: pad(minute), format: "short" }]);
+      document.querySelector("#news-slots li:last-child input")?.focus();
+    });
+    $("news-slots").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-remove-slot]");
+      if (!btn) return;
+      btn.closest("li").remove();
+      renderSlots(readSlots());
+      $("news-add-slot").focus();
+    });
+  }
+
+  function newsFields(partial) {
+    const slots = readSlots();
+    if (!slots.length) throw new Error("Mindestens eine Sendezeit angeben");
+    const seen = new Set();
+    partial.slots = slots.map((s) => {
+      const m = Number(s.minute);
+      if (!Number.isInteger(m) || m < 0 || m > 59 || String(s.minute).trim() === "") throw new Error("Minute der Sendezeit muss zwischen 0 und 59 liegen");
+      if (seen.has(m)) throw new Error(`Die Minute :${pad(m)} ist doppelt`);
+      seen.add(m);
+      return { minute: pad(m), format: s.format };
+    });
+    partial.placement = $("news-s-placement").value;
+    partial.sources = [...document.querySelectorAll("#news-sources input:checked")].map((i) => i.value);
+    return partial;
   }
 
   function renderPlugins(name, settings) {
@@ -189,6 +284,7 @@
       partial[field] = Math.round(value);
     }
     for (const field of DESKS[name].bools) partial[field] = $(`${name}-s-${field}`).checked;
+    if (name === "news") newsFields(partial);
     if (name === "music" && partial.fill_threshold_minutes >= partial.max_queued_program_minutes) {
       throw new Error("„Nachplanen unter“ muss kleiner sein als „Höchstens eingeplant“");
     }
@@ -217,7 +313,8 @@
       state.desks[name] = await api(`/api/desks/${name}`, { method: "PATCH", ...jsonBody(partial) });
       fillSettings(name);
       renderCard(name);
-      note(noteEl, name === "dispatch" ? "Gespeichert – gilt ab dem nächsten Zwischenruf." : "Gespeichert – gilt ab dem nächsten Lauf.", "ok");
+      const saved = { dispatch: "Gespeichert – gilt ab dem nächsten Zwischenruf.", news: "Gespeichert – gilt ab der nächsten Ausgabe." };
+      note(noteEl, saved[name] || "Gespeichert – gilt ab dem nächsten Lauf.", "ok");
     } catch (e) {
       note(noteEl, "Speichern fehlgeschlagen (" + errorText(e) + ").", "err");
     }
@@ -238,11 +335,11 @@
     }
   }
 
-  // ---------- mailboxes: open wishes (music), news notes (dispatch) ----------
+  // ---------- mailboxes: open wishes (music), news notes (news) ----------
 
   const MAILBOXES = {
     music: { url: "/api/wishes", key: "wishes", list: "music-wishes", meta: "music-wishes-meta", what: "Wunsch", empty: "Keine offenen Wünsche." },
-    dispatch: { url: "/api/news-notes", key: "notes", list: "dispatch-notes", meta: "dispatch-notes-meta", what: "Hinweis", empty: "Nichts vorgemerkt." },
+    news: { url: "/api/news-notes", key: "notes", list: "news-notes", meta: "news-notes-meta", what: "Hinweis", empty: "Nichts vorgemerkt." },
   };
 
   async function loadMailboxes(name) {
@@ -255,22 +352,31 @@
       $(box.meta).textContent = "konnte nicht geladen werden";
       return;
     }
+    // A news note that aired and is still valid is repeated in the full bulletins.
+    entries = entries.map((e) => (e.repeats ? { ...e, status: "repeats" } : e));
+    const isOpen = (e) => e.status === "noted" || e.status === "repeats";
     // Open ones first (newest first), then the rest of the last days, a few only.
-    const open = entries.filter((e) => e.status === "noted");
-    const done = entries.filter((e) => e.status !== "noted").slice(0, 5);
+    const open = entries.filter(isOpen);
+    const done = entries.filter((e) => !isOpen(e)).slice(0, 5);
     $(box.meta).textContent = `${open.length} offen${done.length ? ` · ${done.length} erledigt` : ""}`;
+    const when = (e) => {
+      if (e.status === "repeats") return `zuletzt ${fmtWhen(e.news_slot)} · gilt bis ${fmtWhen(e.valid_until)}`;
+      if (e.status === "noted" && e.valid_until) return `gilt bis ${fmtWhen(e.valid_until)}`;
+      if (e.status === "used" && e.news_slot) return `in den Nachrichten ${fmtWhen(e.news_slot)}`;
+      return fmtWhen(e.used_at || e.updated_at || e.created_at);
+    };
     syncList($(box.list), [...open, ...done], {
       key: (e) => e.id,
-      sig: (e) => JSON.stringify([e.text, e.status, e.valid_until, e.author]),
+      sig: (e) => JSON.stringify([e.text, e.status, e.valid_until, e.author, e.news_slot]),
       empty: `<p class="hint">${box.empty}</p>`,
       render: (e) => `
         <span class="mail-text">${esc(e.text)}</span>
         <span class="mail-meta">
           <span class="chip" data-status="${esc(e.status)}">${esc(MAIL_STATUS[e.status] || e.status)}</span>
           ${e.author ? `<span>von ${esc(e.author)}</span>` : ""}
-          <span>${e.status === "noted" && e.valid_until ? `gilt bis ${esc(fmtWhen(e.valid_until))}` : esc(fmtWhen(e.used_at || e.updated_at || e.created_at))}</span>
+          <span>${esc(when(e))}</span>
         </span>
-        ${e.status === "noted" ? `<button class="btn ghost small" type="button" data-discard="${esc(e.id)}" data-fkey="discard">Verwerfen</button>` : ""}`,
+        ${isOpen(e) ? `<button class="btn ghost small" type="button" data-discard="${esc(e.id)}" data-fkey="discard">Verwerfen</button>` : ""}`,
       update: (el, e) => { el.dataset.status = e.status; },
     });
   }
@@ -352,7 +458,8 @@
       list.innerHTML = `<p class="note err">Verlauf konnte nicht geladen werden (${esc(e.message)}).</p>`;
       return;
     }
-    const count = (t) => (name === "dispatch" ? TRIGGERS[t.trigger] || t.trigger || "" : `${TRIGGERS[t.trigger] || esc(t.trigger || "")} · ${t.segment_count} Seg.`);
+    const byInput = name !== "music"; // dispatch: the call, news: "Ausgabe 07:30 (kurz)"
+    const count = (t) => (byInput ? TRIGGERS[t.trigger] || t.trigger || "" : `${TRIGGERS[t.trigger] || esc(t.trigger || "")} · ${t.segment_count} Seg.`);
     syncList(list, transcripts, {
       tag: "details",
       className: "run",
@@ -360,15 +467,16 @@
       sig: (t) => `${t.final_message}|${t.error}|${t.inputs}`,
       empty: `<p class="hint">Noch keine Läufe gespeichert.</p>`,
       render: (t) => {
-        // The dispatch desk's input is the call ("Mama: Licht an") - the more telling headline.
-        const headline = name === "dispatch" && t.inputs ? t.inputs : t.final_message;
+        // The dispatch desk's input is the call ("Mama: Licht an"), the news desk's the slot -
+        // the more telling headline.
+        const headline = byInput && t.inputs ? t.inputs : t.final_message;
         return `
         <summary>
           <span class="when">${esc(fmtDateTime(new Date(t.created_at)))}</span>
           <span class="what">${headline ? esc(plain(headline)) : "<em>ohne Abschlussnotiz</em>"}</span>
           <span class="count${t.error ? " err" : ""}">${t.error ? "Fehler" : esc(count(t))}</span>
         </summary>
-        ${name === "dispatch" && t.inputs && t.final_message ? `<p class="hint run-final">${esc(plain(t.final_message))}</p>` : ""}
+        ${byInput && t.inputs && t.final_message ? `<p class="hint run-final">${esc(plain(t.final_message))}</p>` : ""}
         ${t.error ? `<p class="note err" style="margin:8px 0 0">${esc(t.error)}</p>` : ""}
         <pre class="raw">Lädt…</pre>`;
       },
@@ -488,6 +596,7 @@
     }
     initCards();
     initMailboxes();
+    initSlots();
     const { desk, tab } = fromHash();
     selectDesk(desk, { tab, updateHash: false, scroll: !!location.hash });
 

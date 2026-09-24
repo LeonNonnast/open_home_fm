@@ -55,6 +55,27 @@
           </div>
         </section>
 
+        <section class="card desk-card" id="card-news" data-desk="news" aria-labelledby="h-card-news">
+          <div class="card-head">
+            <h2 id="h-card-news"><a href="#news">Nachrichten</a></h2>
+            <span class="desk-head-right">
+              <span class="state-lamp" id="news-lamp" data-state="idle">
+                <span class="dot" aria-hidden="true"></span><span id="news-lamp-label">…</span>
+              </span>
+              <label class="switch" title="Nachrichtenredaktion an/aus">
+                <input type="checkbox" id="news-enabled" aria-label="Nachrichtenredaktion eingeschaltet">
+                <span class="track" aria-hidden="true"></span>
+              </label>
+            </span>
+          </div>
+          <p class="fill-text" id="news-main">…</p>
+          <div id="news-lines"></div>
+          <div class="card-foot">
+            <button class="btn" id="news-run" type="button">Jetzt vorbereiten</button>
+            <span class="note" id="news-run-note" role="status"></span>
+          </div>
+        </section>
+
         <section class="card desk-card" id="card-dispatch" data-desk="dispatch" aria-labelledby="h-card-dispatch">
           <div class="card-head">
             <h2 id="h-card-dispatch"><a href="#dispatch">Leitstelle</a></h2>
@@ -165,6 +186,118 @@
         </div>
       </section>
 
+      <section class="card desk-detail" id="detail-news" data-desk="news" aria-labelledby="h-detail-news" hidden>
+        <div class="detail-head">
+          <h2 id="h-detail-news">Nachrichtenredaktion</h2>
+          <div class="subtabs" role="tablist" aria-label="Nachrichtenredaktion">
+            <button role="tab" type="button" id="news-tab-settings" aria-controls="news-panel-settings" data-tab="settings" aria-selected="true">Einstellungen</button>
+            <button role="tab" type="button" id="news-tab-prompt" aria-controls="news-panel-prompt" data-tab="prompt" aria-selected="false" tabindex="-1">Prompt</button>
+            <button role="tab" type="button" id="news-tab-history" aria-controls="news-panel-history" data-tab="history" aria-selected="false" tabindex="-1">Verlauf</button>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="news-panel-settings" aria-labelledby="news-tab-settings">
+          <section class="mailbox" aria-labelledby="h-news-notes">
+            <div class="card-head">
+              <h3 id="h-news-notes">Meldungs-Postfach</h3>
+              <span class="meta" id="news-notes-meta"></span>
+            </div>
+            <p class="hint" style="margin-bottom:8px">Hinweise aus Zwischenrufen („Morgen ist Sperrmüll“). Neue kommen in die nächste Ausgabe, in die ausführlichen Ausgaben bis „gilt bis“.</p>
+            <ul class="mail-list" id="news-notes"></ul>
+          </section>
+
+          <details class="advanced last-bulletin" id="news-last" hidden>
+            <summary>Letzte Ausgabe <span class="meta" id="news-last-meta"></span></summary>
+            <p class="bulletin-text" id="news-last-text"></p>
+          </details>
+
+          <fieldset>
+            <legend>Sendezeiten</legend>
+            <p class="hint" style="margin-bottom:8px">Jede Stunde zur gewählten Minute, solange der Sender auf Sendung ist. <b>Ausführlich</b>: ca. 2–3 min, mehrere Schlagzeilen, Wetter mit Vorhersage, alle gültigen Hinweise. <b>Kurz</b>: ca. 30–60 s, 2–3 Schlagzeilen, Wetter jetzt, nur neue Hinweise.</p>
+            <ul class="slot-list" id="news-slots"></ul>
+            <button class="btn ghost small" type="button" id="news-add-slot">+ Sendezeit</button>
+          </fieldset>
+
+          <div class="field-grid" style="margin-top:16px">
+            <div class="field">
+              <label for="news-s-lead_minutes">Vorbereitung vorher (min)</label>
+              <input id="news-s-lead_minutes" type="number" min="1" max="15" step="1" inputmode="numeric" aria-describedby="news-h-lead_minutes">
+              <span class="hint" id="news-h-lead_minutes">so lange vor der Sendezeit schreibt die Redaktion</span>
+            </div>
+            <div class="field">
+              <label for="news-s-max_delay_minutes">Verfällt nach (min)</label>
+              <input id="news-s-max_delay_minutes" type="number" min="1" max="30" step="1" inputmode="numeric" aria-describedby="news-h-max_delay_minutes">
+              <span class="hint" id="news-h-max_delay_minutes">läuft bis dahin kein Song zu Ende, fällt die Ausgabe aus</span>
+            </div>
+            <div class="field">
+              <label for="news-s-placement">Platzierung</label>
+              <select id="news-s-placement" aria-describedby="news-h-placement">
+                <option value="after_song">nach dem laufenden Song</option>
+                <option value="on_time">pünktlich (unterbricht)</option>
+              </select>
+              <span class="hint" id="news-h-placement">„Pünktlich“ kommt mit dem Unterbrechen – bis dahin nach dem Song.</span>
+            </div>
+            <div class="field">
+              <label for="news-s-max_tool_iterations">Max. Tool-Runden je Lauf</label>
+              <input id="news-s-max_tool_iterations" type="number" min="1" max="200" step="1" inputmode="numeric">
+            </div>
+          </div>
+
+          <div class="switch-row">
+            <span class="switch-text">
+              <span id="news-l-intro">Einleitung „Die Nachrichten um …“</span>
+              <span class="hint" style="display:block">setzt der Sender vor jede Ausgabe</span>
+            </span>
+            <label class="switch">
+              <input type="checkbox" id="news-s-intro" aria-labelledby="news-l-intro">
+              <span class="track" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <fieldset>
+            <legend>Quellen</legend>
+            <ul class="check-list" id="news-sources">
+              <li><label><input type="checkbox" value="news"> Schlagzeilen <span class="count">get_news_headlines</span></label></li>
+              <li><label><input type="checkbox" value="weather"> Wetter <span class="count">get_weather</span></label></li>
+              <li><label><input type="checkbox" value="notes"> Meldungs-Postfach <span class="count">Hinweise der Hörer</span></label></li>
+            </ul>
+          </fieldset>
+
+          <fieldset>
+            <legend>Plugins</legend>
+            <p class="hint" style="margin-bottom:8px">Zusätzlich aufrufbar (z.&nbsp;B. Wetter für einen anderen Ort). Die Quellen oben werden jedem Lauf automatisch mitgegeben. Installiert und global aktiviert werden Plugins unter <a href="/settings.html">Technik</a>.</p>
+            <table class="check-table">
+              <thead><tr><th scope="col">Plugin</th><th scope="col" class="c">Nutzen</th></tr></thead>
+              <tbody id="news-plugins"></tbody>
+            </table>
+          </fieldset>
+
+          <div class="card-foot">
+            <button class="btn" id="news-save" type="button">Einstellungen speichern</button>
+            <span class="note" id="news-note" role="status"></span>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="news-panel-prompt" aria-labelledby="news-tab-prompt" hidden>
+          <div class="card-head">
+            <span class="badge" id="news-prompt-badge">…</span>
+            <span class="meta" id="news-prompt-meta"></span>
+          </div>
+          <label for="news-prompt" hidden>Prompt der Nachrichtenredaktion</label>
+          <textarea id="news-prompt" spellcheck="false" rows="18"></textarea>
+          <div class="card-foot">
+            <button class="btn" id="news-save-prompt" type="button">Prompt speichern</button>
+            <button class="btn ghost" id="news-reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
+            <span class="note" id="news-prompt-note" role="status"></span>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="news-panel-history" aria-labelledby="news-tab-history" hidden>
+          <p class="hint" style="margin-bottom:12px">Die letzten Läufe der Nachrichtenredaktion – je Ausgabe einer, mit komplettem Gesprächsverlauf.</p>
+          <div class="history" id="news-history"></div>
+        </div>
+      </section>
+
       <section class="card desk-detail" id="detail-dispatch" data-desk="dispatch" aria-labelledby="h-detail-dispatch" hidden>
         <div class="detail-head">
           <h2 id="h-detail-dispatch">Leitstelle</h2>
@@ -224,15 +357,7 @@
             <button class="btn" id="dispatch-save" type="button">Einstellungen speichern</button>
             <span class="note" id="dispatch-note" role="status"></span>
           </div>
-
-          <section class="mailbox divided" aria-labelledby="h-dispatch-notes">
-            <div class="card-head">
-              <h3 id="h-dispatch-notes">Für die Nachrichten vorgemerkt</h3>
-              <span class="meta" id="dispatch-notes-meta"></span>
-            </div>
-            <p class="hint" style="margin-bottom:8px">Hinweise aus Zwischenrufen. Sie werden gesammelt, bis es eine Nachrichtenredaktion gibt, die sie verwendet.</p>
-            <ul class="mail-list" id="dispatch-notes"></ul>
-          </section>
+          <p class="hint" style="margin:14px 0 0">Hinweise „für die Nachrichten“ landen im Meldungs-Postfach der <a href="#news">Nachrichtenredaktion</a>.</p>
         </div>
 
         <div role="tabpanel" id="dispatch-panel-prompt" aria-labelledby="dispatch-tab-prompt" hidden>

@@ -101,6 +101,7 @@ class QueuePlayer:
         # Called with (item, "playing" | "played") when an item starts/ends on air - the calls
         # use it to show "läuft jetzt"/"gesendet 07:14" (app/program/calls.py). Must not raise.
         self.on_item_event: Callable[[QueueItem, str], None] | None = None
+        queue.on_expire = self._on_expire
 
     # ---------- lifecycle ----------
 
@@ -152,6 +153,15 @@ class QueuePlayer:
             started = current.pop("_started")
             current["position"] = round(now - started, 1)
             current["started_at"] = _iso(started)
+            if current["lane"] not in ("urgent", "news") and status["mode"] in ("playing", "filler"):
+                # News are due but wait for the next segment boundary (placement after_song).
+                try:
+                    waiting = self.queue.due_items(("news",))
+                except Exception:
+                    waiting = []
+                if waiting:
+                    status["mode_text"] = "Nachrichten warten auf Song-Ende" if current["type"] != "jingle" \
+                        else "Nachrichten warten auf das Ende der Ansage"
         status["current"] = current
         return status
 
@@ -191,6 +201,33 @@ class QueuePlayer:
         logger.info("Player: %s", text)
         with self._state_lock:
             self._log.append(line)
+
+    @staticmethod
+    def _slot_of(item: QueueItem) -> datetime | None:
+        try:
+            return datetime.fromisoformat(item.not_before) if item.not_before else None
+        except ValueError:
+            return None
+
+    def _news_line(self, item: QueueItem) -> str:
+        slot = self._slot_of(item)
+        if slot is None:
+            return f"Nachrichten: {item.segments[0].title if item.segments else item.id}"
+        delay = max(0, round(time.time() - slot.timestamp()))
+        when = "pünktlich" if delay < 5 else f"{delay // 60}:{delay % 60:02d} nach dem Slot, nach Segment-Ende"
+        return f"Nachrichten {slot.astimezone().strftime('%H:%M')} ({when})"
+
+    def _on_expire(self, item: QueueItem) -> None:
+        if item.lane != "news":
+            return
+        slot = self._slot_of(item)
+        until = item.expires_at
+        try:
+            until = datetime.fromisoformat(until).astimezone().strftime("%H:%M") if until else "?"
+        except ValueError:
+            pass
+        what = f"Nachrichten {slot.astimezone().strftime('%H:%M')}" if slot else "Nachrichten"
+        self._log_line(f"{what} verfallen – nicht bis {until} gesendet")
 
     # ---------- main loop ----------
 
@@ -283,7 +320,10 @@ class QueuePlayer:
                 "duration": segment.duration_seconds,
                 "_started": started,
             }
-        self._log_line(f"{'Ansage' if segment.type == 'jingle' else 'Song'}: {segment.title} ({item.lane})")
+        if item.lane == "news":
+            self._log_line(self._news_line(item))
+        else:
+            self._log_line(f"{'Ansage' if segment.type == 'jingle' else 'Song'}: {segment.title} ({item.lane})")
         if index == 0:
             self._notify(item, "playing")
 

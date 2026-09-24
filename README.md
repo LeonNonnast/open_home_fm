@@ -54,6 +54,15 @@ Zwischenrufe     ┘                          │     Füllstand-Watcher 30 s, H
   `reply_expires_minutes` (30) verfällt er („Nochmal senden“). In der Sendepause laufen direkte
   Aktionen trotzdem, Ansagen/Songs warten auf den Sendebeginn. Alte `data/inbox/*.txt` werden
   beim Start übernommen; `/api/inbox/*` bleibt für eine Version als Alias.
+- **Nachrichten**: die Nachrichtenredaktion (`desks.news`, Prompt `config/desks/news.md`) läuft
+  `lead_minutes` (5) vor jedem Slot im Sendefenster - Standard :00 ausführlich (ca. 2-3 min:
+  Schlagzeilen, Wetter mit Vorhersage, alle gültigen Hinweise) und :30 kurz (ca. 30-60 s,
+  nur neue Hinweise). Quellen (`sources`): News-Plugin, Wetter-Plugin, Meldungs-Postfach. Die
+  Ausgabe (`schedule_news`) ist ein Beitrag der Spur `news` mit `not_before` = Slot: sie läuft
+  nach dem Song, der zum Slot läuft, und verfällt nach `max_delay_minutes` (15). Hinweise aus
+  dem Postfach werden in den ausführlichen Ausgaben bis `valid_until` wiederholt; lief ihre
+  Ausgabe nicht, kommen sie zurück ins Postfach. `placement: on_time` wirkt erst mit dem
+  Unterbrechen (bis dahin wie `after_song`).
 - **Füllprogramm**: Ist kein Programm da, spielt der Player die **Reserve** (`data/reserve.json`,
   15-20 Songs, bei jedem Lauf von der Musikredaktion gepflegt), danach zufällige Songs aus den
   **Lieblings-Playlists** (`music.favorite_playlists`, Playlist-IDs bzw. Ordnernamen der

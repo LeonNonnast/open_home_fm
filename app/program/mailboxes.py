@@ -3,7 +3,9 @@
 - `data/music_wishes.json`: "demnächst" wishes. The music desk sees the open ones as context and
   marks a wish `used` when a planned segment carries its `wish_id`; if that block expires or is
   removed before the segment aired, the wish is `noted` again (calls.reopen_unplayed_wishes).
-- `data/news_notes.json`: hints for the next news (stored only until the news desk arrives).
+- `data/news_notes.json`: hints for the news. The news desk reads them (app/program/news.py) and
+  marks those in a bulletin `used` (with `news_slot`); a used note is repeated in the full
+  bulletins until its `valid_until`, and goes back to `noted` if its bulletin never aired.
 
 Entry: {id, text, author, call_id, created_at, valid_until, status, used_at, queue_item_id}
 with status `noted` -> `used` (-> `noted` again, see above) | `removed`; an entry past its `valid_until` counts as `expired`
@@ -67,9 +69,11 @@ class Mailbox:
 
     def _save(self, entries: list[dict[str, Any]]) -> None:
         cutoff = _now() - CLEANUP_AFTER
+        now = _now()
         kept = [
             e for e in entries
             if self.effective_status(e) == "noted"
+            or (e.get("status") == "used" and (parse_time(e.get("valid_until")) or now) > now)
             or (parse_time(e.get("updated_at") or e.get("created_at")) or _now()) > cutoff
         ]
         write_json_atomic(self.path, {self.key: kept})
@@ -142,6 +146,37 @@ class Mailbox:
                 self._save(entries)
         return used
 
+    def mark_in_bulletin(self, entry_ids: list[str], queue_item_id: str, slot: str) -> list[str]:
+        """News notes read in the bulletin `queue_item_id` for `slot`: noted ones and used ones that
+        are still valid (repeated in the full bulletins) become/stay `used`; returns their ids."""
+        if not entry_ids:
+            return []
+        now = _now()
+        used = []
+        with self._lock:
+            entries = self._load()
+            for entry in entries:
+                if entry["id"] not in entry_ids:
+                    continue
+                status = self.effective_status(entry, now)
+                until = parse_time(entry.get("valid_until"))
+                if status == "noted" or (status == "used" and until is not None and until > now):
+                    entry.update(status="used", used_at=entry.get("used_at") or now.isoformat(),
+                                 updated_at=now.isoformat(), queue_item_id=queue_item_id, news_slot=slot)
+                    used.append(entry["id"])
+            if used:
+                self._save(entries)
+        return used
+
+    def set_fields(self, entry_id: str, **values: Any) -> None:
+        with self._lock:
+            entries = self._load()
+            for entry in entries:
+                if entry["id"] == entry_id:
+                    entry.update(values, updated_at=_now().isoformat())
+                    self._save(entries)
+                    return
+
     def reopen(self, entry_ids: list[str]) -> None:
         """Used entries go back to `noted` (their block didn't air); expired ones stay expired."""
         now = _now().isoformat()
@@ -150,19 +185,20 @@ class Mailbox:
             changed = False
             for entry in entries:
                 if entry["id"] in entry_ids and entry.get("status") == "used":
-                    entry.update(status="noted", used_at=None, updated_at=now)
+                    entry.update(status="noted", used_at=None, updated_at=now, news_slot=None)
                     changed = True
             if changed:
                 self._save(entries)
 
-    def remove(self, entry_id: str) -> dict[str, Any] | None:
-        """Discards a noted entry (undo); returns the entry (unchanged when it wasn't noted)."""
+    def remove(self, entry_id: str, also_used: bool = False) -> dict[str, Any] | None:
+        """Discards a noted entry (undo) - with `also_used` also a used one (a news note repeated in
+        the full bulletins); returns the entry (unchanged when it couldn't be discarded)."""
         with self._lock:
             entries = self._load()
             entry = next((e for e in entries if e["id"] == entry_id), None)
             if entry is None:
                 return None
-            if self.effective_status(entry) == "noted":
+            if self.effective_status(entry) == "noted" or (also_used and entry.get("status") == "used"):
                 entry.update(status="removed", updated_at=_now().isoformat())
                 self._save(entries)
             entry["status"] = self.effective_status(entry)

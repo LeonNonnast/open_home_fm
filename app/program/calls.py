@@ -169,6 +169,28 @@ def reopen_unplayed_wishes(wishes: Mailbox, items: dict[str, QueueItem]) -> list
     return reopen
 
 
+def follow_news_notes(notes: Mailbox, items: dict[str, QueueItem]) -> list[str]:
+    """A news note counts as used once its bulletin is prepared; it stays used when that bulletin
+    aired (`aired_at`). A bulletin that expired or was removed before it aired gives a note that
+    never aired back to the mailbox (if still valid) - the next bulletin reads it again."""
+    reopen = []
+    for note in notes.all():
+        if note["status"] != "used":
+            continue
+        item = items.get(note.get("queue_item_id") or "")
+        if item is None:
+            continue
+        if item.status == "played" or item.next_segment > 0:
+            if not note.get("aired_at"):
+                notes.set_fields(note["id"], aired_at=item.updated_at or _now().isoformat())
+        elif item.status in ("expired", "skipped", "removed") and not note.get("aired_at"):
+            reopen.append(note["id"])
+    if reopen:
+        notes.reopen(reopen)
+        logger.info("News notes back in the mailbox (their bulletin didn't air): %s", ", ".join(reopen))
+    return reopen
+
+
 class CallStore:
     def __init__(
         self,
@@ -334,6 +356,8 @@ class CallStore:
         items = {i.id: i for i in self.queue.items()} if self.queue else {}
         if self.wishes is not None:
             reopen_unplayed_wishes(self.wishes, items)
+        if self.notes is not None:
+            follow_news_notes(self.notes, items)
         wishes = {w["id"]: w for w in self.wishes.all()} if self.wishes else {}
         notes = {n["id"]: n for n in self.notes.all()} if self.notes else {}
         estimates: dict[str, datetime] | None = None
@@ -398,7 +422,13 @@ class CallStore:
                     elif block.status in ("playing", "played"):
                         action["note"] = "im Programm gespielt" if block.status == "played" else "im laufenden Block"
             elif action.get("note_id") in notes:
-                action["status"] = notes[action["note_id"]]["status"]
+                news_note = notes[action["note_id"]]
+                action["status"] = news_note["status"]
+                slot = news_note.get("news_slot") if news_note["status"] == "used" else None
+                if slot and action.get("type") == "news_note":
+                    action["note"] = f"in den Nachrichten {hhmm(slot)}"
+                elif action.get("type") == "news_note" and str(action.get("note") or "").startswith("in den Nachrichten"):
+                    action["note"] = None  # back in the mailbox (its bulletin didn't air)
 
         queue_states = {a["status"] for a in call["actions"] if a.get("queue_item_id")}
         live = [a for a in call["actions"] if a["status"] not in ("removed", "failed", "expired")]

@@ -139,7 +139,8 @@ function syncList(container, items, { key, sig = (item) => JSON.stringify(item),
 
 // ---------- desks (short status, shared by Sendung and Redaktion) ----------
 
-const DESK_NAMES = { music: "Musik", dispatch: "Leitstelle" };
+const DESK_NAMES = { music: "Musik", news: "Nachrichten", dispatch: "Leitstelle" };
+const NEWS_FORMATS = { full: "ausführlich", short: "kurz" };
 
 const lineHtml = (lines) =>
   lines.map((l) => `<p class="desk-line${l.kind === "err" ? " err" : ""}">${esc(l.text)}</p>`).join("");
@@ -148,6 +149,7 @@ const lineHtml = (lines) =>
 function deskSummary(desk, name = desk?.name) {
   if (!desk) return { state: "off", label: "unbekannt", lines: [] };
   if (name === "dispatch") return dispatchSummary(desk);
+  if (name === "news") return newsSummary(desk);
   const lines = [];
   let state = desk.state || "idle";
   let label = { idle: "bereit", running: "plant…", error: "Fehler" }[state] || state;
@@ -190,6 +192,38 @@ function dispatchSummary(desk) {
   }
   if (desk.queued_calls) {
     lines.push({ text: `${desk.queued_calls} ${desk.queued_calls === 1 ? "Antwort" : "Antworten"} im Programm eingeplant` });
+  }
+  if (desk.last_error && desk.consecutive_failures > 0) {
+    const retry = desk.backoff_until ? ` · nächster Versuch ${fmtWhen(desk.backoff_until)}` : "";
+    lines.push({ text: `Fehler: ${desk.last_error}${retry}`, kind: "err" });
+  }
+  return { state, label, lines };
+}
+
+// The news desk: "Nächste Ausgabe 07:30 (kurz) · Vorbereitung 07:25".
+function newsSummary(desk) {
+  const lines = [];
+  let state = desk.state || "idle";
+  let label = { idle: "bereit", running: "schreibt…", error: "Fehler" }[state] || state;
+  if (desk.enabled === false) {
+    state = "off";
+    label = "aus";
+    lines.push({ text: "Aus – keine Nachrichten." });
+  } else if (desk.next_slot_at) {
+    if (state === "idle") label = hhmm(new Date(desk.next_slot_at));
+    const fmt = NEWS_FORMATS[desk.next_slot_format] || "";
+    const prep = state === "running" ? "wird gerade geschrieben"
+      : desk.prepared ? "vorbereitet" : `Vorbereitung ${fmtWhen(desk.prepare_at)}`;
+    lines.push({ text: `Nächste Ausgabe ${fmtWhen(desk.next_slot_at)}${fmt ? ` (${fmt})` : ""} · ${prep}` });
+  } else {
+    lines.push({ text: "Keine Ausgabe im Sendefenster geplant." });
+  }
+  const notes = desk.open_notes || 0;
+  if (notes) lines.push({ text: `${notes} ${notes === 1 ? "neuer Hinweis" : "neue Hinweise"} im Postfach` });
+  const last = desk.last_bulletin;
+  if (last?.slot && new Date(last.slot) <= new Date()) {
+    const what = { played: "gesendet", playing: "läuft gerade", queued: "wartet auf Song-Ende", expired: "verfallen", removed: "entfernt" }[last.status] || "";
+    lines.push({ text: `zuletzt ${fmtWhen(last.slot)} (${NEWS_FORMATS[last.format] || ""})${what ? ` · ${what}` : ""}` });
   }
   if (desk.last_error && desk.consecutive_failures > 0) {
     const retry = desk.backoff_until ? ` · nächster Versuch ${fmtWhen(desk.backoff_until)}` : "";

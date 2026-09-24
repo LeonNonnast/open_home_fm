@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.program.calls import PENDING_STATUSES, CallStore, call_view
+from app.program.news import note_is_valid
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +272,10 @@ def delete_wish(wish_id: str, request: Request) -> dict:
 
 @notes_router.get("")
 def get_notes(request: Request) -> dict:
-    return {"notes": list(reversed(request.app.state.desk_runner.news_notes.all()))}
+    notes = list(reversed(request.app.state.desk_runner.news_notes.all()))
+    for n in notes:
+        n["repeats"] = n["status"] == "used" and note_is_valid(n)  # still in the full bulletins
+    return {"notes": notes}
 
 
 @notes_router.delete("/{note_id}")
@@ -280,8 +284,9 @@ def delete_note(note_id: str, request: Request) -> dict:
     note = mailbox.get(note_id)
     if note is None:
         raise HTTPException(status_code=404, detail="Hinweis nicht gefunden")
-    if note["status"] != "noted":
+    # A used note that's still valid is repeated in the full bulletins - it can be discarded too.
+    if not note_is_valid(note):
         raise HTTPException(status_code=409, detail=f"Hinweis ist bereits {note['status']}")
-    note = mailbox.remove(note_id)
+    note = mailbox.remove(note_id, also_used=True)
     _calls(request).sync()
     return note

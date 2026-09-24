@@ -17,6 +17,8 @@ DEFAULTS = {
     "desks": {"music": {"enabled": True, "fill_threshold_minutes": 10, "block_minutes": 20,
                         "max_queued_program_minutes": 45, "songs_per_announcement": 3,
                         "no_repeat_minutes": 120, "max_tool_iterations": 20},
+              # Off by default in tests: its cron/catch-up would otherwise run depending on the clock.
+              "news": {"enabled": False},
               "dispatch": {"enabled": True, "allow_interrupt": True, "min_minutes_between_interrupts": 10,
                            "reply_expires_minutes": 30, "wish_default_valid_hours": 24, "max_tool_iterations": 6,
                            "plugins": ["control_hue_lights", "get_weather"]}},
@@ -29,6 +31,7 @@ DEFAULTS = {
 }
 DEFAULT_PROMPT = "Du bist der Standard-Redakteur.\n"
 DISPATCH_PROMPT = "Du bist die Leitstelle.\n"
+NEWS_PROMPT = "Du bist die Nachrichtenredaktion.\n"
 
 
 @pytest.fixture
@@ -39,6 +42,7 @@ def config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "config" / "config.yaml").write_text(yaml.safe_dump(DEFAULTS, sort_keys=False), encoding="utf-8")
     (tmp_path / "config" / "desks" / "music.md").write_text(DEFAULT_PROMPT, encoding="utf-8")
     (tmp_path / "config" / "desks" / "dispatch.md").write_text(DISPATCH_PROMPT, encoding="utf-8")
+    (tmp_path / "config" / "desks" / "news.md").write_text(NEWS_PROMPT, encoding="utf-8")
     monkeypatch.setattr(cfg, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(cfg, "DEFAULTS_PATH", tmp_path / "config" / "config.yaml")
     monkeypatch.setattr(cfg, "USER_CONFIG_PATH", tmp_path / "data" / "config.yaml")

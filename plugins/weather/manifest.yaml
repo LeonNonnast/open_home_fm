@@ -6,6 +6,9 @@ parameters:
     location:
       type: string
       description: Ortsname, z.B. "Berlin". Weglassen für den Standort des Senders.
+    forecast:
+      type: boolean
+      description: true = zusätzlich die Vorhersage für heute und morgen
   required: []
 enabled: true
 # Runs automatically each loop (for the location chosen in the installer), result goes straight

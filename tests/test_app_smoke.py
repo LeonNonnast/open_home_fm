@@ -121,3 +121,25 @@ def test_switching_the_music_source_drops_its_planned_songs(client):
     assert queue.get(item.id).status == "expired"
     notices = client.get("/api/status").json()["notices"]
     assert any("Neustart des Dienstes nötig" in n["text"] for n in notices)
+
+
+def test_news_desk_patch_validates_and_shows_up_in_status(client):
+    for bad in ({"slots": [{"minute": "60", "format": "full"}]}, {"slots": [{"minute": "7", "format": "full"}]},
+                {"slots": [{"minute": "00", "format": "long"}]}, {"slots": []},
+                {"slots": [{"minute": "00", "format": "full"}, {"minute": "00", "format": "short"}]},
+                {"slots": [{"minute": "00"}]}, {"lead_minutes": 0}, {"lead_minutes": 16}, {"max_delay_minutes": 0},
+                {"placement": "sometimes"}, {"sources": ["tv"]}, {"nonsense": True}, {"lead_minutes": None}):
+        assert client.patch("/api/desks/news", json=bad).status_code == 422, bad
+    data = client.patch("/api/desks/news", json={
+        "slots": [{"minute": "45", "format": "short"}, {"minute": "15", "format": "full"}],
+        "lead_minutes": 15, "sources": ["news", "notes", "news"], "placement": "on_time",
+    }).json()
+    assert data["settings"]["slots"] == [{"minute": "15", "format": "full"}, {"minute": "45", "format": "short"}]
+    assert data["settings"]["sources"] == ["news", "notes"] and data["placement_note"]
+    assert data["next_slot_at"] and data["prepare_at"] and data["next_slot_format"] in ("full", "short")
+    assert sorted(j.id for j in client.app.state.scheduler._scheduler.get_jobs() if j.id.startswith("news-")) \
+        == ["news-00", "news-30"]
+    news = client.get("/api/status").json()["desks"]["news"]
+    assert news["next_slot_at"] == data["next_slot_at"] and news["prepared"] is False
+    assert [d["name"] for d in client.get("/api/desks").json()["desks"]] == ["music", "news", "dispatch"]
+    assert client.get("/api/desks/news/prompt").json()["text"].startswith("Du bist die Nachrichtenredaktion")

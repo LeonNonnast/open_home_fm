@@ -1,7 +1,10 @@
-// "Sendung" (index.html): on-air display, "Als Nächstes" from the queue, 24h dial, skip/remove.
+// "Sendung" (index.html): on-air display, "Als Nächstes" from the queue, 24h dial with the
+// next news slots, skip/remove.
 
 (() => {
   const VISIBLE_SEGMENTS = 10;
+  const NEWS_MARKER_HOURS = 3;
+  const EXCERPT_CHARS = 140;
   const UNDO_SECONDS = 10;
 
   let config = {};
@@ -47,6 +50,14 @@
       if (endMin > day) parts.push(`<div class="dial-program" style="left:0;width:${pct(Math.min(endMin - day, day))}"></div>`);
     }
 
+    // News slots as markers - only the next few hours, every half hour would be too dense for 24h.
+    const slots = newsSlots(status, now, NEWS_MARKER_HOURS);
+    slots.forEach((slot, i) => {
+      const min = slot.at.getHours() * 60 + slot.at.getMinutes();
+      const title = `Nachrichten ${hhmm(slot.at)} (${NEWS_FORMATS[slot.format] || slot.format})`;
+      parts.push(`<div class="dial-slot ${esc(slot.format)}${i === 0 ? " next" : ""}" style="left:${pct(min)}" title="${esc(title)}"></div>`);
+    });
+
     for (let h = 1; h < 24; h++) {
       parts.push(`<div class="dial-tick${h % 6 === 0 ? " major" : ""}" style="left:${pct(h * 60)}"></div>`);
     }
@@ -65,6 +76,42 @@
       : remaining > 0
         ? `Programm bis ~${hhmm(new Date(Date.now() + remaining * 1000))}`
         : status.on_air ? "Kein Programm geplant" : status.next_on_air_at ? `Sendebeginn ${fmtWhen(status.next_on_air_at)}` : "";
+    const news = status?.desks?.news;
+    const cap = $("dial-news");
+    if (!news || news.enabled === false || !(news.slots || []).length) {
+      cap.hidden = !news;
+      cap.textContent = news ? "Nachrichten aus" : "";
+    } else {
+      cap.hidden = false;
+      const each = news.slots.map((s) => `:${s.minute} (${NEWS_FORMATS[s.format] || s.format})`).join(" · ");
+      const next = news.next_slot_at ? ` · nächste ${fmtWhen(news.next_slot_at)}` : "";
+      cap.textContent = `Nachrichten ${each}${next}`;
+    }
+  }
+
+  // Upcoming news slots within `hours` (and the broadcast window), from the desk's settings.
+  function newsSlots(status, now, hours) {
+    const news = status?.desks?.news;
+    if (!news || news.enabled === false || !news.slots?.length) return [];
+    const schedule = config.schedule || {};
+    const inWindow = (d) => {
+      if (!schedule.enabled) return true;
+      const m = d.getHours() * 60 + d.getMinutes();
+      const start = minutesOf(schedule.start_time);
+      const end = minutesOf(schedule.end_time);
+      return start <= end ? m >= start && m < end : m >= start || m < end;
+    };
+    const result = [];
+    const base = new Date(now);
+    base.setMinutes(0, 0, 0);
+    for (let h = 0; h <= hours; h++) {
+      for (const slot of news.slots) {
+        const at = new Date(base.getTime() + h * 3600000);
+        at.setMinutes(Number(slot.minute));
+        if (at > now && at - now <= hours * 3600000 && inWindow(at)) result.push({ at, format: slot.format });
+      }
+    }
+    return result.sort((a, b) => a.at - b.at);
   }
 
   // ---------- on air ----------
@@ -126,7 +173,7 @@
       const chipHtml = chips.join("");
       if ($("now-chips").innerHTML !== chipHtml) $("now-chips").innerHTML = chipHtml;
       const isJingle = np.type === "jingle";
-      $("now-title").textContent = isJingle ? "Moderation" : np.title;
+      $("now-title").textContent = np.lane === "news" ? np.title : isJingle ? "Moderation" : np.title;
       $("now-text").hidden = !(isJingle && np.text);
       $("now-text").textContent = isJingle ? plain(np.text) : "";
       $("progress-wrap").hidden = false;
@@ -175,9 +222,15 @@
 
   function removeLabel(item, segs) {
     if (item.lane === "reply") return "Antwort entfernen";
+    if (item.lane === "news") return "Ausgabe entfernen";
     const n = trackCount(segs);
     return n ? `Block entfernen (${n} Titel)` : "Beitrag entfernen";
   }
+
+  const excerpt = (text) => {
+    const t = plain(text || "");
+    return t.length > EXCERPT_CHARS ? `${t.slice(0, EXCERPT_CHARS).replace(/\s+\S*$/, "")} …` : t;
+  };
 
   // A reply names the call it answers: "Antwort an Mama" + the call's text.
   function replyHead(item) {
@@ -205,7 +258,13 @@
     const status = Status.data;
     let budget = VISIBLE_SEGMENTS;
     const rows = [];
-    for (const item of data.items) {
+    // Play order by time: the queue lists by lane priority, but a bulletin held for its slot
+    // (or a reply waiting for the broadcast start) comes after what plays until then.
+    const startOf = (i) => (i.status === "playing" ? -Infinity : i.starts_at ? new Date(i.starts_at).getTime() : Infinity);
+    const ordered = data.items.map((item, index) => ({ item, index }))
+      .sort((a, b) => startOf(a.item) - startOf(b.item) || a.index - b.index)
+      .map((x) => x.item);
+    for (const item of ordered) {
       const segs = item.segments.slice(item.next_segment || 0);
       if (!segs.length) continue;
       const shown = Math.max(0, Math.min(segs.length, budget));
@@ -230,7 +289,13 @@
       sig: (r) => `${r.item.status}|${r.item.next_segment}|${r.shown}|${r.segs.length}|${r.item.lane}|${r.item.call?.author}|${r.item.call?.text}`,
       empty,
       render: (r) => {
-        const segItems = r.segs.slice(0, r.shown).map((s, i) => `
+        const isNews = r.item.lane === "news";
+        const segItems = r.segs.slice(0, r.shown).map((s, i) => isNews ? `
+          <li class="jingle news">
+            <span class="t" data-seg="${i}"></span>
+            <span class="title">${esc(s.title)}<span class="excerpt">${esc(excerpt(s.text))}</span></span>
+            <span class="dur"></span>
+          </li>` : `
           <li class="${s.type === "jingle" ? "jingle" : "track"}">
             <span class="t" data-seg="${i}"></span>
             <span class="title">${esc(s.type === "jingle" ? plain(s.text || s.title) : s.title)}</span>
@@ -242,7 +307,8 @@
           <div class="block-head">
             ${laneChip(r.item.lane)}
             <span class="when" data-when></span>
-            <span class="meta">${trackCount(r.segs) || r.item.lane !== "reply" ? `${trackCount(r.segs)} Titel · ` : ""}${r.item.lane === "reply" ? fmtDuration(total) : fmtMinutes(total)}</span>
+            ${isNews && r.item.not_before ? `<span class="slot">Slot ${hhmm(new Date(r.item.not_before))}</span>` : ""}
+            <span class="meta">${trackCount(r.segs) || !["reply", "news"].includes(r.item.lane) ? `${trackCount(r.segs)} Titel · ` : ""}${["reply", "news"].includes(r.item.lane) ? fmtDuration(total) : fmtMinutes(total)}</span>
             <button class="btn ghost small" type="button" data-remove="${esc(r.item.id)}" data-fkey="remove"
               data-lane="${esc(r.item.lane)}" data-count="${trackCount(r.segs)}">${esc(removeLabel(r.item, r.segs))}</button>
           </div>
@@ -324,6 +390,8 @@
         btn.closest("li.block")?.remove();
         showUndo(id, btn.dataset.lane === "reply"
           ? "Antwort entfernt – im Gespräch steht „vom Sender entfernt“."
+          : btn.dataset.lane === "news"
+            ? "Nachrichten entfernt – ihre Hinweise kommen in die nächste Ausgabe."
           : count
             ? `Block mit ${count} Titeln entfernt – die Musikredaktion plant nach.`
             : "Beitrag entfernt.");

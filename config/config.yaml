@@ -25,6 +25,28 @@ desks:
     # Plugin tools this desk may call; context_plugins are fetched automatically into its input.
     plugins: [get_weather, get_favorite_songs, get_news_headlines]
     context_plugins: [get_weather]
+  # The news desk prepares a bulletin lead_minutes before every slot inside the broadcast window
+  # and queues it for the slot: it airs after the song running at that time and is dropped
+  # if it couldn't air within max_delay_minutes.
+  news:
+    enabled: true
+    # minute of every hour + format: full = ca. 2-3 min (several headlines, weather with forecast,
+    # all valid notes), short = ca. 30-60 s (2-3 headlines, current weather, only new notes).
+    slots:
+      - {minute: "00", format: full}
+      - {minute: "30", format: short}
+    lead_minutes: 5
+    # after_song | on_time (on_time needs interrupting, a later version - until then after_song).
+    placement: after_song
+    max_delay_minutes: 15
+    # What a bulletin is made of: news = get_news_headlines, weather = get_weather, notes = the
+    # news mailbox (hints from listener calls).
+    sources: [news, weather, notes]
+    # Put "Die Nachrichten um sieben Uhr." in front of every bulletin.
+    intro: true
+    max_tool_iterations: 8
+    # Plugin tools it may call on top of the sources (e.g. weather for another place).
+    plugins: []
   # The dispatch desk ("Leitstelle") runs right away for every listener call: it rates how urgent
   # it is and routes it - lights directly, "als Nächstes" into the reply lane, wishes to the music
   # desk, hints to the news mailbox. It also runs outside the broadcast window (anything to be

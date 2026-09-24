@@ -1206,3 +1206,54 @@ h3 { margin: 0; font-size: 0.92rem; font-weight: 700; font-stretch: 112%; }
 .run-final { margin: 8px 0 0; }
 .call:focus { outline: none; }
 .call:focus-visible { outline: 2px solid var(--signal); outline-offset: 4px; border-radius: var(--radius); }
+
+/* ---------- News desk ---------- */
+
+details.last-bulletin { margin: 0 0 20px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+details.last-bulletin > summary .meta { font-weight: 400; margin-left: 8px; }
+.bulletin-text { margin: 0; font-size: 0.9rem; line-height: 1.55; max-width: 72ch; white-space: pre-line; overflow-wrap: anywhere; }
+
+.slot-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.slot-list li {
+  display: grid;
+  grid-template-columns: auto 4.4rem minmax(0, 14rem) auto;
+  justify-content: start;
+  align-items: center;
+  gap: 8px;
+}
+.slot-list .at { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+.slot-list input, .slot-list select { padding: 7px 8px; }
+.slot-list .btn { justify-self: start; }
+@media (max-width: 420px) {
+  .slot-list li { grid-template-columns: auto 4rem minmax(0, 1fr) auto; justify-content: stretch; gap: 6px; }
+}
+
+.mail-list .chip[data-status="repeats"] { color: var(--lane-news); }
+.mail-list > li[data-status="repeats"] .mail-text { color: var(--ink); }
+
+/* News in "Als Nächstes" and on the dial */
+.segs li.news .title { color: var(--display-ink); font-style: normal; }
+.segs li.news .title::before { content: none; }
+.segs li.news .excerpt { display: block; color: var(--display-muted); font-size: 0.82rem; }
+.block-head .slot { font-family: var(--font-mono); font-size: 0.75rem; color: var(--display-lane-news); }
+
+.dial-slot {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  height: 26px;
+  background: var(--lane-news);
+  opacity: 0.55;
+}
+.dial-slot.full { height: 34px; opacity: 0.8; }
+.dial-slot.next { opacity: 1; width: 3px; }
+.dial-caption .news-cap::before {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 0.8em;
+  margin-right: 6px;
+  vertical-align: -1px;
+  background: var(--lane-news);
+}

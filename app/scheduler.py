@@ -6,6 +6,12 @@ Music desk:
 - right at the broadcast start.
 The fill watcher holds off while the player's circuit breaker is tripped (source unreachable).
 
+News desk: an APScheduler cron job per slot, `lead_minutes` before it (re-planned when the
+slots change), for slots inside the broadcast window. The watcher catches up on a slot whose
+preparation was missed (app started late, the run failed - gated by the desk's backoff) while
+the slot is still ahead; a manual run ("Jetzt vorbereiten") prepares the next slot again and
+replaces what was prepared for it.
+
 Dispatch desk: right away for every new call (the calls API asks), plus a watcher every 10 s
 that syncs the calls with the queue, expires calls nobody could handle and re-requests a run
 while calls are open (which also retries after an LLM failure, gated by the desk's backoff of
@@ -17,13 +23,14 @@ the DeskRunner's job (app/agent/desk.py).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.agent.desk import DESK_LABELS, DESKS, DeskConfig, DeskRunner
 from app.config import is_broadcast_time, load_config
 from app.program.calls import STUCK_PROCESSING_MINUTES
+from app.program.news import FORMAT_LABELS, cron_minutes, next_slot, normalize_slots
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +45,8 @@ class DeskScheduler:
         self._scheduler = BackgroundScheduler()
         self._heartbeat_job = None
         self._was_on_air: bool | None = None
+        self._news_jobs: list = []
+        self._news_signature: tuple | None = None
 
     def start(self) -> None:
         # next_run_time=None would add the job *paused* in APScheduler 3.x - check right away.
@@ -47,6 +56,7 @@ class DeskScheduler:
                                                       max_instances=1, coalesce=True)
         self._scheduler.add_job(self.watch_calls, "interval", seconds=CALLS_WATCH_SECONDS,
                                 next_run_time=datetime.now(), max_instances=1, coalesce=True)
+        self.plan_news_jobs()
         self._scheduler.start()
         logger.info("Desk scheduler started (fill watcher every %ds, heartbeat every %d min, calls every %ds)",
                     WATCH_SECONDS, HEARTBEAT_MINUTES, CALLS_WATCH_SECONDS)
@@ -72,6 +82,69 @@ class DeskScheduler:
     def _music_may_run(self) -> bool:
         return is_broadcast_time(load_config()) and self.under_cap()
 
+    # ---------- news desk ----------
+
+    @staticmethod
+    def _news() -> DeskConfig:
+        return DeskConfig.from_config("news", load_config())
+
+    def plan_news_jobs(self) -> list[int]:
+        """(Re-)creates the cron jobs: one per distinct minute of the hour at which a slot is
+        prepared. Cheap when nothing changed, so the watcher calls it every time."""
+        settings = self._news().settings
+        minutes = cron_minutes(settings)
+        signature = (tuple(minutes),)
+        if signature == self._news_signature:
+            return minutes
+        for job in self._news_jobs:
+            try:
+                job.remove()
+            except Exception:
+                pass
+        self._news_jobs = [
+            self._scheduler.add_job(self.news_trigger, "cron", minute=minute, second=0, id=f"news-{minute:02d}",
+                                    replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=120)
+            for minute in minutes
+        ]
+        self._news_signature = signature
+        logger.info("News desk: preparing at minute(s) %s of every hour", ", ".join(f"{m:02d}" for m in minutes) or "-")
+        return minutes
+
+    def _news_target(self) -> tuple[datetime, str] | None:
+        config = load_config()
+        return next_slot(config, DeskConfig.from_config("news", config).settings)
+
+    def _news_due(self, slot: datetime) -> bool:
+        """Within the lead time before `slot` and nothing prepared for it yet."""
+        lead = self._news().settings["lead_minutes"]
+        slot = slot.astimezone(timezone.utc)  # UTC: same-tzinfo datetimes compare by wall clock
+        now = datetime.now(timezone.utc)
+        return slot - timedelta(minutes=lead, seconds=30) <= now < slot and not self.runner.news_prepared(slot)
+
+    def news_trigger(self) -> str | None:
+        """The cron job: prepares the slot `lead_minutes` ahead (if it's inside the broadcast window)."""
+        try:
+            target = self._news_target()
+            if target is None or not self._news_due(target[0]):
+                logger.info("News cron: no slot to prepare right now (next: %s)", target[0] if target else "-")
+                return None
+            return self.request_run("news", "slot")["status"]
+        except Exception:
+            logger.exception("News trigger failed")
+            return None
+
+    def watch_news(self) -> None:
+        try:
+            self.plan_news_jobs()
+            target = self._news_target()
+            if target is None or self.runner.is_running("news") or not self._news_due(target[0]):
+                return
+            status = self.request_run("news", "catch_up")["status"]
+            if status == "started":
+                logger.info("News for %s not prepared yet - news desk started", target[0].strftime("%H:%M"))
+        except Exception:
+            logger.exception("News watcher failed")
+
     # ---------- triggers ----------
 
     def request_run(self, name: str, trigger: str, force: bool = False) -> dict:
@@ -85,6 +158,12 @@ class DeskScheduler:
                 cap = self._music().settings["max_queued_program_minutes"]
                 return {"status": "skipped", "reason": f"Warteschlange voll (Obergrenze {cap} Minuten Programm)."}
             condition = self._music_may_run
+        elif name == "news":
+            target = self._news_target()
+            if target is None:
+                return {"status": "skipped", "reason": "Keine Ausgabe im Sendefenster der nächsten 48 Stunden."}
+            # Timed runs only while the slot still needs one; "Jetzt vorbereiten" prepares it again.
+            condition = None if force else (lambda: (t := self._news_target()) is not None and self._news_due(t[0]))
         elif name == "dispatch":
             condition = self.runner.calls.has_pending
         else:
@@ -98,6 +177,7 @@ class DeskScheduler:
         return {"status": status, "reason": reasons.get(status)}
 
     def watch(self) -> None:
+        self.watch_news()  # also outside the broadcast window: a slot at its start is prepared before
         try:
             config = load_config()
             on_air = is_broadcast_time(config)
@@ -165,6 +245,31 @@ class DeskScheduler:
                 "cap_minutes": s["max_queued_program_minutes"],
                 "block_minutes": s["block_minutes"],
             }
+        elif name == "news":
+            s = desk.settings
+            target = next_slot(config, s)
+            slot, fmt = target if target else (None, None)
+            prepare_at = (slot.astimezone(timezone.utc) - timedelta(minutes=s["lead_minutes"])).astimezone() \
+                if slot else None
+            prepared = bool(slot) and self.runner.news_prepared(slot)
+            data["next_slot_at"] = slot.isoformat() if slot else None
+            data["next_slot_format"] = fmt
+            data["prepare_at"] = prepare_at.isoformat() if prepare_at else None
+            data["prepared"] = prepared
+            data["last_bulletin"] = self.runner.last_bulletin()
+            data["open_notes"] = len(self.runner.news_notes.open())
+            data["slots"] = normalize_slots(s["slots"]) or []
+            data["next_trigger_at"] = status["backoff_until"] or (
+                None if prepared or prepare_at is None else prepare_at.isoformat())
+            if status["backoff_until"]:
+                data["next_trigger"] = "nächster Versuch nach Fehler"
+            elif slot is None:
+                data["next_trigger"] = "keine Ausgabe im Sendefenster"
+            elif prepared:
+                data["next_trigger"] = f"Ausgabe {slot.strftime('%H:%M')} ist vorbereitet"
+            else:
+                data["next_trigger"] = (f"bereitet {slot.strftime('%H:%M')} ({FORMAT_LABELS[fmt]}) um "
+                                        f"{prepare_at.strftime('%H:%M')} vor")
         elif name == "dispatch":
             calls = self.runner.calls.all()
             data["open_calls"] = sum(c["status"] in ("new", "retrying", "processing") for c in calls)

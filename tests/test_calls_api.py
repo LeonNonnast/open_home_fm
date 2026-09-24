@@ -164,6 +164,13 @@ def test_mailboxes_api(client):
     assert client.get("/api/news-notes").json()["notes"][0]["id"] == note["id"]
     assert client.delete(f"/api/news-notes/{note['id']}").json()["status"] == "removed"
     assert client.delete("/api/news-notes/nope").status_code == 404
+    # A note that aired and is still valid (repeated in the full bulletins) can be discarded too.
+    from datetime import datetime, timedelta, timezone
+    repeated = runner.news_notes.add("Oma kommt", valid_until=datetime.now(timezone.utc) + timedelta(days=1))
+    runner.news_notes.mark_in_bulletin([repeated["id"]], "item", "2026-09-24T06:00:00+00:00")
+    assert next(n for n in client.get("/api/news-notes").json()["notes"] if n["id"] == repeated["id"])["repeats"]
+    assert client.delete(f"/api/news-notes/{repeated['id']}").json()["status"] == "removed"
+    assert client.delete(f"/api/news-notes/{repeated['id']}").status_code == 409
 
 
 def test_inbox_alias_creates_calls(client):
