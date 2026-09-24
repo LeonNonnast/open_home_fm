@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
     player = ScriptPlayer(
         provider=create_music_provider(config),
         script_path=agent_loop.script_path,
+        play_history_path=agent_loop.play_history_path,
     )
 
     app.state.agent_loop = agent_loop

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from app.agent.builtin_tools import build_builtin_tools
 from app.agent.llm import LLMMessage, create_llm_provider
+from app.agent.play_history import recently_played
 from app.agent.plugin_loader import register_plugins
 from app.agent.script import load_script
 from app.agent.tools import ToolRegistry
@@ -43,6 +44,7 @@ class AgentLoop:
         self.inbox_dir = root_dir / "data" / "inbox"
         self.processed_dir = root_dir / "data" / "processed"
         self.script_path = root_dir / "data" / "playlists" / "current_script.json"
+        self.play_history_path = root_dir / "data" / "playlists" / "play_history.json"
         self.state_path = root_dir / "data" / "state.json"
         self.transcripts_dir = root_dir / "data" / "transcripts"
         self.plugins_dir = root_dir / "plugins"
@@ -56,13 +58,17 @@ class AgentLoop:
         llm = create_llm_provider(config)
 
         min_program_minutes = min_program_minutes_for(config)
+        no_repeat_minutes = config.get("agent", {}).get("no_repeat_minutes", 120)
+        recent_tracks = recently_played(self.play_history_path, no_repeat_minutes)
         registry = ToolRegistry()
-        for tool in build_builtin_tools(provider, tts_engine, self.script_path, min_program_minutes):
+        for tool in build_builtin_tools(
+            provider, tts_engine, self.script_path, min_program_minutes, recent_tracks
+        ):
             registry.register(tool)
         register_plugins(registry, self.plugins_dir, config.get("plugins", {}).get("disabled"))
 
         inbox_items = self._collect_inbox()
-        user_content = self._build_user_message(inbox_items, min_program_minutes)
+        user_content = self._build_user_message(inbox_items, min_program_minutes, recent_tracks, no_repeat_minutes)
 
         # Saved as part of this run's transcript: static system prompt, auto-fetched plugin
         # context, the actual wishes, and the full tool-calling exchange.
@@ -149,14 +155,26 @@ class AgentLoop:
         return f"{weekday}, {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} Uhr"
 
     @classmethod
-    def _build_user_message(cls, inbox_items: list[tuple[Path, str]], min_program_minutes: int) -> str:
+    def _build_user_message(
+        cls,
+        inbox_items: list[tuple[Path, str]],
+        min_program_minutes: int,
+        recent_tracks: list[dict],
+        no_repeat_minutes: int,
+    ) -> str:
         # Stated here rather than only in system_prompt.md: the prompt is user-editable, but the
         # length requirement is what keeps the station from going silent between runs.
         length = (
             f"Das Programm muss mindestens {min_program_minutes} Minuten füllen (ca. "
             f"{max(1, round(min_program_minutes / 3.5))} Songs plus Ansagen), damit bis zum nächsten "
-            "Durchlauf keine Stille entsteht. Wiederhole keine Songs aus den letzten Durchläufen."
+            "Durchlauf keine Stille entsteht. Jeder Song darf im Programm nur einmal vorkommen."
         )
+        if recent_tracks:
+            titles = list(dict.fromkeys(e["title"] for e in recent_tracks))
+            length += (
+                f"\nIn den letzten {no_repeat_minutes} Minuten liefen bereits (nicht erneut einplanen, "
+                "werden sonst automatisch entfernt):\n" + "\n".join(f"- {t}" for t in titles)
+            )
         now = cls._now_description()
         if not inbox_items:
             return (

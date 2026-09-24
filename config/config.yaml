@@ -11,6 +11,8 @@ agent:
   # Max tool-call round-trips per loop iteration, guards against runaway loops. A longer program
   # needs more song lookups, so keep this well above the number of songs per script.
   max_tool_iterations: 20
+  # Songs that went on air within this many minutes are not planned again.
+  no_repeat_minutes: 120
 
 schedule:
   # false (default) = always on air. true restricts generation + playback to the daily window

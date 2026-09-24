@@ -27,8 +27,17 @@ TRACK_ESTIMATE_SECONDS = 210
 
 
 def build_builtin_tools(
-    provider: MusicProvider, tts_engine: TTSEngine, script_path: Path, min_program_minutes: int = 0
+    provider: MusicProvider,
+    tts_engine: TTSEngine,
+    script_path: Path,
+    min_program_minutes: int = 0,
+    recent_tracks: list[dict] | None = None,
 ) -> list[Tool]:
+    # Matched by uri and by title: the same song often exists under several uris (single, album,
+    # remaster), and the model tends to pick whichever version the search returns first.
+    recent_uris = {e["uri"] for e in recent_tracks or []}
+    recent_titles = {e["title"].casefold() for e in recent_tracks or []}
+
     def search_songs(query: str, limit: int = 5) -> str:
         tracks = provider.search_tracks(query, limit=limit)
         if not tracks:
@@ -81,6 +90,9 @@ def build_builtin_tools(
           {"type": "jingle", "text": "kurzer gesprochener Text"}
         """
         resolved: list[Segment] = []
+        skipped_repeats: list[str] = []
+        planned_uris: set[str] = set()
+        planned_titles: set[str] = set()
         for raw in segments:
             seg_type = (raw.get("type") or "").lower()
             if seg_type not in {"track", *JINGLE_TYPE_ALIASES}:
@@ -106,6 +118,12 @@ def build_builtin_tools(
                     logger.warning("set_playback_script: no track resolved for %r, skipping", raw)
                     continue
                 title = f"{track.title} - {track.artist}" if track.artist else track.title
+                key = title.casefold()
+                if track.uri in recent_uris | planned_uris or key in recent_titles | planned_titles:
+                    skipped_repeats.append(title)
+                    continue
+                planned_uris.add(track.uri)
+                planned_titles.add(key)
                 resolved.append(
                     Segment(
                         type="track",
@@ -141,6 +159,10 @@ def build_builtin_tools(
             / 60
         )
         result = f"Script {script.id} mit {len(resolved)} Segmenten (ca. {total_minutes} Minuten) gespeichert."
+        if skipped_repeats:
+            result += (
+                " Entfernt, weil kürzlich gespielt oder doppelt eingeplant: " + "; ".join(skipped_repeats) + "."
+            )
         if total_minutes < min_program_minutes:
             # The script is saved either way, so a model that stops here still leaves something
             # playable - but the nudge usually gets it to extend the program instead.

@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+from app.agent.play_history import record_played
 from app.agent.script import Script, load_script
 from app.config import is_broadcast_time, load_config
 from app.music.base import MusicProvider, Track
@@ -25,11 +26,13 @@ class ScriptPlayer:
         self,
         provider: MusicProvider,
         script_path: Path,
+        play_history_path: Path | None = None,
         poll_interval: float = 5.0,
         jingle_player_binary: str = "ffplay",
     ):
         self.provider = provider
         self.script_path = script_path
+        self.play_history_path = play_history_path
         self.poll_interval = poll_interval
         self.jingle_player_binary = jingle_player_binary
         self._last_script_id: str | None = None
@@ -81,6 +84,8 @@ class ScriptPlayer:
                         uri=segment.audio_ref,
                         duration_seconds=segment.duration_seconds,
                     )
+                    if self.play_history_path is not None:
+                        record_played(self.play_history_path, segment.audio_ref, segment.title)
                     self.provider.play_and_wait(track)
                 elif segment.type == "jingle":
                     self._play_jingle(segment.audio_ref)
