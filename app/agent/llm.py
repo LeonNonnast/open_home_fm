@@ -7,10 +7,14 @@ responsible for translating to/from its own wire format.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,7 +61,7 @@ class OllamaProvider(LLMProvider):
                 ]
             wire_messages.append(entry)
 
-        response = self.client.chat(model=self.model, messages=wire_messages, tools=tools or None)
+        response = self._chat_with_retry(wire_messages, tools)
         message = response["message"]
 
         tool_calls = [
@@ -69,6 +73,25 @@ class OllamaProvider(LLMProvider):
             for i, tc in enumerate(message.get("tool_calls") or [])
         ]
         return LLMMessage(role="assistant", content=message.get("content", "") or "", tool_calls=tool_calls)
+
+
+    # Ollama Cloud occasionally answers with a transient 5xx mid-run; without a retry that one
+    # hiccup throws away the whole generation run.
+    RETRY_DELAYS_SECONDS = (2, 5, 10)
+
+    def _chat_with_retry(self, wire_messages: list[dict[str, Any]], tools: list[dict[str, Any]]):
+        import ollama
+
+        for attempt, delay in enumerate((*self.RETRY_DELAYS_SECONDS, None), start=1):
+            try:
+                return self.client.chat(model=self.model, messages=wire_messages, tools=tools or None)
+            except (ollama.ResponseError, ConnectionError) as exc:
+                status = getattr(exc, "status_code", None)
+                retryable = status is None or status >= 500 or status == 429
+                if delay is None or not retryable:
+                    raise
+                logger.warning("Ollama request failed (attempt %d, %s), retrying in %ds", attempt, exc, delay)
+                time.sleep(delay)
 
 
 class AnthropicProvider(LLMProvider):
