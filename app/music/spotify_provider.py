@@ -8,6 +8,7 @@ device we default to when no explicit device is requested.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import spotipy
@@ -15,7 +16,7 @@ from spotipy.exceptions import SpotifyOauthError
 from spotipy.oauth2 import SpotifyOAuth
 
 from app.config import ROOT_DIR
-from app.music.base import Device, MusicProvider, Playlist, Track
+from app.music.base import Device, MusicProvider, PlaybackResult, Playlist, Track
 
 logger = logging.getLogger(__name__)
 
@@ -151,19 +152,32 @@ class SpotifyMusicProvider(MusicProvider):
         except Exception:
             logger.warning("Could not set Spotify volume to %d%%", self.volume_percent, exc_info=True)
 
-    def play_and_wait(self, track: Track, device: Device | None = None) -> None:
+    # Playback-state poll interval: tight enough to notice a song ending early, loose enough to
+    # stay far away from the Web API rate limits. A stop request doesn't wait for it.
+    POLL_SECONDS = 5
+
+    def play_until(self, track: Track, stop_event: threading.Event, device: Device | None = None) -> PlaybackResult:
         self.play(track, device)
+        started = time.monotonic()
         duration = track.duration_seconds or 180.0
-        deadline = time.time() + duration + 2
+        deadline = started + duration + 2
+        position = 0.0
         # Poll playback state so we notice early skips/failures instead of always sleeping the
         # full nominal duration.
-        while time.time() < deadline:
-            time.sleep(5)
+        while time.monotonic() < deadline:
+            if stop_event.wait(self.POLL_SECONDS):
+                try:
+                    self.stop(device)
+                except Exception:
+                    logger.warning("Could not pause Spotify playback", exc_info=True)
+                return PlaybackResult(finished=False, position_seconds=time.monotonic() - started)
             state = self.sp.current_playback()
             if not state or not state.get("is_playing"):
                 break
-            if state.get("item", {}).get("uri") != track.uri:
+            if (state.get("item") or {}).get("uri") != track.uri:
                 break
+            position = (state.get("progress_ms") or 0) / 1000
+        return PlaybackResult(finished=True, position_seconds=max(position, time.monotonic() - started))
 
     def stop(self, device: Device | None = None) -> None:
         target = self._resolve_device(device)

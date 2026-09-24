@@ -79,32 +79,23 @@ def test_system_prompt_fallback_save_and_reset(config_env):
     assert cfg.load_system_prompt() == DEFAULT_PROMPT
 
 
-class FakeScheduler:
-    def __init__(self):
-        self.intervals: list[int] = []
-
-    def reschedule(self, seconds: int) -> None:
-        self.intervals.append(seconds)
-
-
 def _client():
     app = FastAPI()
     app.include_router(config_router)
-    app.state.scheduler = FakeScheduler()
-    return TestClient(app), app.state.scheduler
+    return TestClient(app), None
 
 
-def test_patch_merges_partial_and_reschedules(config_env):
-    client, scheduler = _client()
+def test_patch_merges_partial(config_env):
+    client, _ = _client()
     client.patch("/api/config", json={"schedule": {"enabled": True}}).raise_for_status()
-    res = client.patch("/api/config", json={"schedule": {"start_time": "07:00"}, "agent": {"loop_interval_seconds": 600}})
+    res = client.patch("/api/config", json={"schedule": {"start_time": "07:00"}, "desks": {"music": {"block_minutes": 30}}})
     res.raise_for_status()
     body = res.json()
     assert body["schedule"] == {"enabled": True, "start_time": "07:00", "end_time": "23:00"}
-    assert scheduler.intervals == [600]
+    assert body["desks"]["music"]["block_minutes"] == 30 and body["desks"]["music"]["fill_threshold_minutes"] == 10
     assert yaml.safe_load(cfg.USER_CONFIG_PATH.read_text(encoding="utf-8")) == {
         "schedule": {"enabled": True, "start_time": "07:00"},
-        "agent": {"loop_interval_seconds": 600},
+        "desks": {"music": {"block_minutes": 30}},
     }
 
 

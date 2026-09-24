@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 from rapidfuzz import fuzz, process
 
-from app.music.base import Device, MusicProvider, Playlist, Track
+from app.music.base import Device, MusicProvider, PlaybackResult, Playlist, Track
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,9 @@ class LocalMusicProvider(MusicProvider):
     def list_devices(self) -> list[Device]:
         return [Device(id="local", name=f"Local output ({self.output_device})", is_active=True)]
 
+    def library_tracks(self) -> list[Track]:
+        return list(self._tracks_by_id.values())
+
     def play(self, track: Track, device: Device | None = None) -> None:
         self._stop_current()
         logger.info("Playing local track: %s - %s", track.artist, track.title)
@@ -105,13 +109,17 @@ class LocalMusicProvider(MusicProvider):
             env={"AUDIODEV": self.output_device} if self.output_device != "default" else None,
         )
 
-    def play_and_wait(self, track: Track, device: Device | None = None) -> None:
-        self._stop_current()
-        logger.info("Playing (blocking) local track: %s - %s", track.artist, track.title)
-        subprocess.run(
-            [self.player_binary, "-nodisp", "-autoexit", "-loglevel", "quiet", track.uri],
-            check=False,
-        )
+    def play_until(self, track: Track, stop_event: threading.Event, device: Device | None = None) -> PlaybackResult:
+        # Popen instead of subprocess.run: a blocking run() can't be skipped and kept the service
+        # from shutting down until the song was over.
+        self.play(track, device)
+        process = self._process
+        started = time.monotonic()
+        while process is not None and process.poll() is None:
+            if stop_event.wait(0.5):
+                self._stop_current()
+                return PlaybackResult(finished=False, position_seconds=time.monotonic() - started)
+        return PlaybackResult(finished=True, position_seconds=time.monotonic() - started)
 
     def stop(self, device: Device | None = None) -> None:
         self._stop_current()

@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import subprocess
+import threading
 import wave
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -18,6 +19,9 @@ from pathlib import Path
 from app.config import ROOT_DIR
 
 logger = logging.getLogger(__name__)
+
+# Piper is the heavy CPU load on the Pi: desks may run in parallel, but only one renders at a time.
+RENDER_LOCK = threading.Lock()
 
 
 class TTSEngine(ABC):
@@ -119,6 +123,10 @@ class PiperTTSEngine(TTSEngine):
 
     def render(self, text: str, out_path: Path) -> None:
         """Renders `text` to `out_path`, bypassing the cache (used for web UI previews)."""
+        with RENDER_LOCK:
+            self._render(text, out_path)
+
+    def _render(self, text: str, out_path: Path) -> None:
         if not self.voice_model.exists():
             raise FileNotFoundError(
                 f"Piper voice model not found at {self.voice_model}. "

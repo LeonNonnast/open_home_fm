@@ -6,6 +6,9 @@ Up to v0.1 the web UI wrote straight into the tracked `config/config.yaml` and
 tracked file is restored - so `git pull` works again. Runs from `install.sh` (update and full
 setup) and at app startup, for installations updated with a plain `git pull`.
 
+`migrate_agent_settings()` (run once at app start) moves the pre-desk `agent.*` settings to
+`desks.music.*` and removes the runtime files the queue replaced.
+
 Run standalone with: .venv/bin/python -m app.migrate
 """
 from __future__ import annotations
@@ -97,7 +100,51 @@ def migrate_user_data(root: Path | None = None) -> list[str]:
     return moved
 
 
+# agent.<key> -> desks.music.<key>; agent.loop_interval_seconds is gone (fill level instead).
+AGENT_KEYS_TO_MUSIC_DESK = ("max_tool_iterations", "no_repeat_minutes")
+LEGACY_SCRIPT = "data/playlists/current_script.json"
+
+
+def migrate_agent_settings(root: Path | None = None) -> list[str]:
+    """Moves `agent.*` in the user config to `desks.music.*` (idempotent). Returns what changed."""
+    root = root or cfg.ROOT_DIR
+    changes = []
+    with cfg._lock:
+        overrides = cfg.load_user_config()
+        agent = overrides.get("agent")
+        if isinstance(agent, dict):
+            music = overrides.setdefault("desks", {}).setdefault("music", {})
+            defaults = cfg.load_defaults().get("desks", {}).get("music", {})
+            for key in AGENT_KEYS_TO_MUSIC_DESK:
+                if key in agent:
+                    value = agent.pop(key)
+                    # A value already set on the desk is the newer one; the default isn't a
+                    # user setting (pre-split installs dumped the whole config).
+                    if key not in music and value != defaults.get(key):
+                        music[key] = value
+                    changes.append(f"agent.{key} -> desks.music.{key}")
+            if agent.pop("loop_interval_seconds", None) is not None:
+                changes.append("agent.loop_interval_seconds entfernt")
+            if not agent:
+                overrides.pop("agent")
+            if not music:
+                overrides["desks"].pop("music")
+            if not overrides["desks"]:
+                overrides.pop("desks")
+            if changes:
+                cfg.write_user_config(overrides)
+                logger.info("Migrated agent settings: %s", ", ".join(changes))
+    # Replaced by data/queue.json; its content is stale after the update anyway.
+    legacy_script = root / LEGACY_SCRIPT
+    if legacy_script.exists():
+        legacy_script.unlink()
+        changes.append(f"{LEGACY_SCRIPT} gelöscht")
+    return changes
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     for path in migrate_user_data():
         print(f"{path}: lokale Einstellungen nach data/ übernommen, Datei auf den Repo-Stand zurückgesetzt.")
+    for change in migrate_agent_settings():
+        print(change)

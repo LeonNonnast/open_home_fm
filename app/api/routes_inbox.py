@@ -1,10 +1,12 @@
 """Where listener wishes enter the system, as text or as a voice recording (STT'd immediately).
 
-The agent loop itself only ever reads `*.txt` files from data/inbox (see app/agent/loop.py), so
-both paths converge on the same plain-text format before the agent ever sees them.
+The music desk only ever reads `*.txt` files from data/inbox (see app/agent/desk.py), so both
+paths converge on the same plain-text format before the agent ever sees them. A new wish asks
+the music desk to plan right away (within the queue cap). Replaced by the calls in Phase 2.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +14,8 @@ from fastapi import APIRouter, File, Request, UploadFile
 from pydantic import BaseModel
 
 from app.config import resolve_path
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/inbox", tags=["inbox"])
 
@@ -32,12 +36,23 @@ def list_inbox() -> dict:
     return {"items": items}
 
 
+def _wake_music_desk(request: Request) -> None:
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        return
+    try:
+        scheduler.request_run("music", "wish")
+    except Exception:
+        logger.exception("Could not trigger the music desk for a new wish")
+
+
 @router.post("/text")
-def submit_text(body: TextWishBody) -> dict:
+def submit_text(body: TextWishBody, request: Request) -> dict:
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     path = INBOX_DIR / f"{stamp}.txt"
     path.write_text(body.text.strip(), encoding="utf-8")
+    _wake_music_desk(request)
     return {"status": "ok", "filename": path.name}
 
 
@@ -54,4 +69,5 @@ async def submit_voice(request: Request, file: UploadFile = File(...)) -> dict:
 
     text_path = INBOX_DIR / f"{stamp}.txt"
     text_path.write_text(text, encoding="utf-8")
+    _wake_music_desk(request)
     return {"status": "ok", "text": text, "filename": text_path.name}

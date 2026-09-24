@@ -4,15 +4,27 @@
 # keeps updates conflict-free, and changed defaults reach every value you never touched.
 # To change something by hand, copy just that key (with its parent keys) into data/config.yaml.
 
-agent:
-  # How often the agent loop wakes up and processes the inbox / builds the next script. Each
-  # script is planned to run a bit longer than this (see min_program_minutes_for in loop.py).
-  loop_interval_seconds: 1800
-  # Max tool-call round-trips per loop iteration, guards against runaway loops. A longer program
-  # needs more song lookups, so keep this well above the number of songs per script.
-  max_tool_iterations: 20
-  # Songs that went on air within this many minutes are not planned again.
-  no_repeat_minutes: 120
+desks:
+  # The music desk plans the program in blocks and appends them to the queue whenever the
+  # program left runs low - there's no fixed interval any more.
+  music:
+    enabled: true
+    # Plan the next block once less than this many minutes of program are queued.
+    fill_threshold_minutes: 10
+    # Length of one block.
+    block_minutes: 20
+    # Never queue more program than this (neither the fill trigger nor "run now").
+    max_queued_program_minutes: 45
+    # At most one announcement per this many songs, across block boundaries.
+    songs_per_announcement: 3
+    # Songs that went on air (or are already queued) within this many minutes are not planned again.
+    no_repeat_minutes: 120
+    # Max tool-call round-trips per run, guards against runaway loops. A longer block needs more
+    # song lookups, so keep this well above the number of songs per block.
+    max_tool_iterations: 20
+    # Plugin tools this desk may call; context_plugins are fetched automatically into its input.
+    plugins: [get_weather, get_favorite_songs, get_news_headlines]
+    context_plugins: [get_weather]
 
 schedule:
   # false (default) = always on air. true restricts generation + playback to the daily window
@@ -43,12 +55,18 @@ music:
     volume_percent: 90
   local:
     library_path: "data/library"
+  # Playlist ids (Spotify ids, or folder names under the local library): taste context for the
+  # music desk and the last fallback of the filler program. Local source without favorites:
+  # the filler plays from the whole library.
+  favorite_playlists: []
 
 audio:
   # ALSA/PulseAudio output sink that feeds the FM transmitter chain.
   # Both the local music provider and the jingle/TTS player write here.
   output_device: "default"
   jingle_cache_dir: "data/audio_cache"
+  # Fade length for interruptions (used from Phase 4 on).
+  fade_seconds: 2
 
 tts:
   # "piper" (local) | "none"

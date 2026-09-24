@@ -15,7 +15,7 @@ from __future__ import annotations
 import copy
 import os
 import threading
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -201,3 +201,13 @@ def is_broadcast_time(config: dict[str, Any], now: datetime | None = None) -> bo
     if start <= end:
         return start <= current <= end
     return current >= start or current <= end
+
+
+def next_broadcast_start(config: dict[str, Any], now: datetime | None = None) -> datetime | None:
+    """When the station goes on air next (local time); None while on air or always on air."""
+    now = now or datetime.now()
+    if is_broadcast_time(config, now):
+        return None
+    start = _parse_hhmm(config.get("schedule", {}).get("start_time", "00:00"))
+    candidate = datetime.combine(now.date(), start)
+    return candidate if candidate > now else candidate + timedelta(days=1)

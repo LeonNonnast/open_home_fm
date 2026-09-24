@@ -1,6 +1,6 @@
-"""Builtin tools: plain functions exposing the music provider (Spotify or local) plus the
-script/jingle tools - no MCP server involved, just Tool objects calling the provider APIs
-directly.
+"""Builtin tools of the music desk: plain functions exposing the music provider (Spotify or local)
+plus the program tools that append to the queue - no MCP server involved, just Tool objects
+calling the provider APIs directly.
 
 These are registered directly (not discovered from ./plugins) because they're core to the
 agent, not user-extensible - but they use the exact same Tool/ToolRegistry contract as plugins.
@@ -9,34 +9,68 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from app.agent.script import Script, Segment, save_script
 from app.agent.tools import Tool
-from app.audio.tts import TTSEngine
-from app.music.base import Device, MusicProvider, Track
+from app.audio.tts import PiperTTSEngine, TTSEngine
+from app.music.base import MusicProvider, Track
+from app.program.filler import save_reserve, track_segment
+from app.program.queue import ProgramQueue, QueueItem, Segment
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for update_reserve, so a runaway model can't dump a whole playlist in there.
+MAX_RESERVE_TRACKS = 30
 
-# Rough length of a spoken segment, used for the program length estimate (TTS audio length isn't
-# known without decoding the file).
-JINGLE_ESTIMATE_SECONDS = 20
-# Tracks whose duration the provider doesn't report (some local files).
-TRACK_ESTIMATE_SECONDS = 210
+# Tool-calling models don't always stick to the enum in the schema below (observed in
+# practice: a model announcing spoken segments as "announcement" instead of "jingle") -
+# tolerate the common synonyms rather than silently dropping the segment.
+JINGLE_TYPE_ALIASES = {"jingle", "announcement", "announce", "tts", "speech", "ansage", "voice"}
+
+
+def songs_since_last_announcement(segments: list[Segment]) -> int | None:
+    """Songs after the last jingle in `segments`; None when there's no announcement at all."""
+    count = 0
+    for seg in reversed(segments):
+        if seg.type == "jingle":
+            return count
+        count += 1
+    return None
 
 
 def build_builtin_tools(
     provider: MusicProvider,
     tts_engine: TTSEngine,
-    script_path: Path,
-    min_program_minutes: int = 0,
+    queue: ProgramQueue,
+    *,
     recent_tracks: list[dict] | None = None,
+    block_minutes: int = 20,
+    songs_per_announcement: int = 3,
+    max_queued_program_minutes: int = 45,
+    remaining_program_seconds: Callable[[], float] | None = None,
+    reserve_path: Path | None = None,
+    desk: str = "music",
+    appended: list[QueueItem] | None = None,
 ) -> list[Tool]:
+    """`appended` collects the items this run added to the queue (for the transcript)."""
+    remaining = remaining_program_seconds or queue.remaining_program_seconds
+    appended = appended if appended is not None else []
     # Matched by uri and by title: the same song often exists under several uris (single, album,
     # remaster), and the model tends to pick whichever version the search returns first.
     recent_uris = {e["uri"] for e in recent_tracks or []}
     recent_titles = {e["title"].casefold() for e in recent_tracks or []}
+    run_seconds = [0.0]  # program minutes this run appended over all calls
+
+    def resolve(raw: dict[str, Any]) -> Track | None:
+        # Models sometimes echo the `uri` from an earlier search_songs result instead of
+        # restating the search text - try that exact lookup before a fresh text search.
+        uri = raw.get("uri")
+        query = raw.get("query", "")
+        track = provider.get_track_by_uri(uri) if uri else None
+        if track is None:
+            candidates = provider.search_tracks(query or uri or "", limit=1)
+            track = candidates[0] if candidates else None
+        return track
 
     def search_songs(query: str, limit: int = 5) -> str:
         tracks = provider.search_tracks(query, limit=limit)
@@ -67,112 +101,173 @@ def build_builtin_tools(
             f"- {d.name} (id={d.id}){' [aktiv]' if d.is_active else ''}" for d in devices
         )
 
-    def play_on_device(track_uri: str, device_id: str | None = None) -> str:
-        """Ad-hoc immediate playback, outside of the deterministic script - use sparingly.
-
-        `track_uri` must be a uri as returned by search_songs/get_playlist_tracks, not free text.
-        """
-        device = Device(id=device_id, name=device_id) if device_id else None
-        track = Track(id=track_uri, title=track_uri, artist="", uri=track_uri)
-        provider.play(track, device)
-        return f"Spiele jetzt: {track_uri}"
-
-    # Tool-calling models don't always stick to the enum in the schema below (observed in
-    # practice: a model announcing spoken segments as "announcement" instead of "jingle") -
-    # tolerate the common synonyms rather than silently dropping the segment.
-    JINGLE_TYPE_ALIASES = {"jingle", "announcement", "announce", "tts", "speech", "ansage", "voice"}
-
-    def set_playback_script(segments: list[dict[str, Any]]) -> str:
-        """Finalizes this loop iteration's program. Called exactly once, at the end.
+    def append_program_block(segments: list[dict[str, Any]]) -> str:
+        """Appends one block of songs and announcements to the end of the program queue.
 
         Each segment is either:
-          {"type": "track", "query": "artist - title"}
+          {"type": "track", "query": "artist - title"}  (or "uri")
           {"type": "jingle", "text": "kurzer gesprochener Text"}
         """
+        # Planned but not yet played counts as much as played: never queue a song twice.
+        blocked_uris = set(recent_uris)
+        blocked_titles = set(recent_titles)
+        for seg in queue.planned_tracks():
+            blocked_uris.add(seg.audio_ref)
+            blocked_titles.add(seg.title.casefold())
+
+        room = max_queued_program_minutes * 60 - remaining()
+        if room <= 0:
+            return (
+                f"Nicht angehängt: die Warteschlange ist voll (Obergrenze {max_queued_program_minutes} "
+                "Minuten Programm). Beende den Durchlauf."
+            )
+
+        # The announcement rate is checked across the block boundary: the end of the already
+        # queued program counts, so a new block doesn't start with a second greeting.
+        since = songs_since_last_announcement(queue.program_tail())
         resolved: list[Segment] = []
         skipped_repeats: list[str] = []
-        planned_uris: set[str] = set()
-        planned_titles: set[str] = set()
-        for raw in segments:
+        skipped_announcements: list[str] = []
+        failed: list[str] = []
+        truncated = 0
+        total = 0.0
+        for raw in segments if isinstance(segments, list) else []:
+            if not isinstance(raw, dict):
+                continue
             seg_type = (raw.get("type") or "").lower()
             if seg_type not in {"track", *JINGLE_TYPE_ALIASES}:
                 # Some models drop the `type` field entirely (observed in practice) - infer it
-                # from whichever content field was actually supplied rather than dropping the
-                # segment outright.
+                # from whichever content field was actually supplied.
                 if raw.get("uri") or raw.get("query"):
                     seg_type = "track"
                 elif raw.get("text"):
                     seg_type = "jingle"
 
             if seg_type == "track":
-                # Models sometimes echo the `uri` from an earlier search_songs result instead
-                # of restating the search text - try that exact lookup before falling back to
-                # a fresh text search.
-                uri = raw.get("uri")
-                query = raw.get("query", "")
-                track = provider.get_track_by_uri(uri) if uri else None
+                track = resolve(raw)
                 if track is None:
-                    candidates = provider.search_tracks(query or uri or "", limit=1)
-                    track = candidates[0] if candidates else None
-                if track is None:
-                    logger.warning("set_playback_script: no track resolved for %r, skipping", raw)
+                    logger.warning("append_program_block: no track resolved for %r, skipping", raw)
+                    failed.append(raw.get("query") or raw.get("uri") or "?")
                     continue
-                title = f"{track.title} - {track.artist}" if track.artist else track.title
-                key = title.casefold()
-                if track.uri in recent_uris | planned_uris or key in recent_titles | planned_titles:
-                    skipped_repeats.append(title)
+                segment = track_segment(track, provider.name)
+                segment.wish_id = raw.get("wish_id")
+                key = segment.title.casefold()
+                if track.uri in blocked_uris or key in blocked_titles:
+                    skipped_repeats.append(segment.title)
                     continue
-                planned_uris.add(track.uri)
-                planned_titles.add(key)
-                resolved.append(
-                    Segment(
-                        type="track",
-                        title=title,
-                        audio_ref=track.uri,
-                        provider=provider.name,
-                        duration_seconds=track.duration_seconds,
-                    )
-                )
+                if total + segment.estimated_seconds() > room:
+                    truncated += 1
+                    continue
+                blocked_uris.add(track.uri)
+                blocked_titles.add(key)
+                resolved.append(segment)
+                total += segment.estimated_seconds()
+                since = None if since is None else since + 1
             elif seg_type in JINGLE_TYPE_ALIASES:
                 text = (raw.get("text") or "").strip()
                 if not text:
                     continue
-                audio_path = tts_engine.synthesize(text)
-                resolved.append(
-                    Segment(
-                        type="jingle",
-                        title=text[:60],
-                        audio_ref=str(audio_path),
-                        text=text,
-                    )
+                if since is not None and since < songs_per_announcement:
+                    skipped_announcements.append(text[:60])
+                    continue
+                try:
+                    audio_path = tts_engine.synthesize(text)
+                except Exception as exc:
+                    logger.warning("append_program_block: TTS failed for %r: %s", text[:60], exc)
+                    failed.append(f"Ansage '{text[:40]}' ({exc})")
+                    continue
+                try:
+                    duration = PiperTTSEngine.duration_seconds(audio_path)
+                except Exception:
+                    duration = None
+                segment = Segment(
+                    type="jingle", title=text[:60], audio_ref=str(audio_path), text=text,
+                    duration_seconds=duration, wish_id=raw.get("wish_id"),
                 )
+                resolved.append(segment)
+                total += segment.estimated_seconds()
+                since = 0
             else:
-                logger.warning("set_playback_script: unknown segment type '%s', skipping", seg_type)
+                logger.warning("append_program_block: unknown segment type '%s', skipping", seg_type)
 
-        script = Script.new(resolved)
-        save_script(script, script_path)
-        total_minutes = round(
-            sum(
-                (seg.duration_seconds or TRACK_ESTIMATE_SECONDS) if seg.type == "track" else JINGLE_ESTIMATE_SECONDS
-                for seg in resolved
-            )
-            / 60
-        )
-        result = f"Script {script.id} mit {len(resolved)} Segmenten (ca. {total_minutes} Minuten) gespeichert."
+        notes = []
         if skipped_repeats:
-            result += (
-                " Entfernt, weil kürzlich gespielt oder doppelt eingeplant: " + "; ".join(skipped_repeats) + "."
+            notes.append("Entfernt, weil kürzlich gespielt oder schon eingeplant: " + "; ".join(skipped_repeats) + ".")
+        if skipped_announcements:
+            notes.append(
+                f"Ansage entfernt (höchstens eine Ansage je {songs_per_announcement} Songs, auch über die "
+                "Blockgrenze hinweg): " + "; ".join(f"'{t}'" for t in skipped_announcements) + "."
             )
-        if total_minutes < min_program_minutes:
-            # The script is saved either way, so a model that stops here still leaves something
-            # playable - but the nudge usually gets it to extend the program instead.
+        if failed:
+            notes.append("Nicht auflösbar: " + "; ".join(failed) + ".")
+        if truncated:
+            notes.append(
+                f"{truncated} Song(s) weggelassen: sonst wäre die Obergrenze von {max_queued_program_minutes} "
+                "Minuten Programm überschritten."
+            )
+
+        if not any(s.type == "track" for s in resolved):
+            return "Kein Block angehängt: kein Song übrig. " + " ".join(notes)
+
+        item = queue.append(QueueItem.new("program", desk, resolved))
+        appended.append(item)
+        run_seconds[0] += total
+        result = (
+            f"Block {item.id} mit {len(resolved)} Segmenten (ca. {round(total / 60)} Minuten) angehängt. "
+            f"Das Programm reicht jetzt ca. {round(remaining() / 60)} Minuten."
+        )
+        if notes:
+            result += " " + " ".join(notes)
+        if round(run_seconds[0] / 60) < block_minutes and not truncated:
+            # The block is queued either way, so a model that stops here still leaves something
+            # playable - but the nudge usually gets it to add more.
             result += (
-                f" Das ist zu kurz: das Programm muss mindestens {min_program_minutes} Minuten füllen, "
-                "sonst entsteht Stille bis zum nächsten Durchlauf. Ergänze weitere Songs und rufe "
-                "set_playback_script mit dem vollständigen, verlängerten Programm erneut auf."
+                f" Das ist zu kurz: plane in diesem Durchlauf insgesamt ca. {block_minutes} Minuten ein. "
+                "Rufe append_program_block mit weiteren Songs erneut auf - sie werden hinten angehängt."
             )
         return result
 
+    def update_reserve(tracks: list[Any]) -> str:
+        """Replaces the reserve: songs the player falls back on when no program is queued."""
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        skipped: list[str] = []
+        for raw in tracks if isinstance(tracks, list) else []:
+            raw = {"query": raw} if isinstance(raw, str) else raw
+            if not isinstance(raw, dict):
+                continue
+            track = resolve(raw)
+            if track is None:
+                continue
+            segment = track_segment(track, provider.name)
+            key = segment.title.casefold()
+            if key in seen or track.uri in seen:
+                continue
+            if track.uri in recent_uris or key in recent_titles:
+                skipped.append(segment.title)
+                continue
+            seen.update({key, track.uri})
+            entries.append({
+                "uri": track.uri, "title": segment.title,
+                "duration_seconds": track.duration_seconds, "provider": provider.name,
+            })
+            if len(entries) >= MAX_RESERVE_TRACKS:
+                break
+        if not entries:
+            return "Reserve unverändert: kein Song auflösbar."
+        save_reserve(reserve_path or Path("data/reserve.json"), entries)
+        result = f"Reserve mit {len(entries)} Songs gespeichert."
+        if skipped:
+            result += " Entfernt, weil kürzlich gespielt: " + "; ".join(skipped) + "."
+        return result
+
+    track_items = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Suchtext 'Artist - Titel'"},
+            "uri": {"type": "string", "description": "uri aus search_songs/get_playlist_tracks"},
+        },
+    }
     return [
         Tool(
             name="search_songs",
@@ -210,26 +305,14 @@ def build_builtin_tools(
             func=find_devices,
         ),
         Tool(
-            name="play_on_device",
-            description="Spielt einen Track sofort ab (außerhalb des regulären Scripts). Nur für Sonderfälle.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "track_uri": {"type": "string"},
-                    "device_id": {"type": "string"},
-                },
-                "required": ["track_uri"],
-            },
-            func=play_on_device,
-        ),
-        Tool(
-            name="set_playback_script",
+            name="append_program_block",
             description=(
-                "Finalisiert das Sendeprogramm dieses Durchlaufs als geordnete Liste aus Song- "
-                "und Jingle-Segmenten. Am Ende des Durchlaufs aufrufen. Track-Segmente: 'query' "
-                "(Suchtext 'Artist - Titel', wird automatisch aufgelöst - vorheriges search_songs "
-                "ist nicht nötig) oder 'uri' (aus search_songs/get_playlist_tracks). Jingle-"
-                "Segmente: 'text' (wird als Audio gesprochen)."
+                "Hängt einen Programmblock aus Song- und Ansage-Segmenten hinten an die "
+                "Warteschlange an (das laufende Programm bleibt unverändert). Track-Segmente: "
+                "'query' (Suchtext 'Artist - Titel', wird automatisch aufgelöst - vorheriges "
+                "search_songs ist nicht nötig) oder 'uri' (aus search_songs/get_playlist_tracks). "
+                "Ansage-Segmente (type 'jingle'): 'text' (wird als Audio gesprochen). Songs, die "
+                "kürzlich liefen oder schon eingeplant sind, und zu dichte Ansagen werden entfernt."
             ),
             parameters={
                 "type": "object",
@@ -243,6 +326,7 @@ def build_builtin_tools(
                                 "query": {"type": "string"},
                                 "uri": {"type": "string"},
                                 "text": {"type": "string"},
+                                "wish_id": {"type": "string", "description": "id des erfüllten Hörerwunschs"},
                             },
                             "required": ["type"],
                         },
@@ -250,6 +334,20 @@ def build_builtin_tools(
                 },
                 "required": ["segments"],
             },
-            func=set_playback_script,
+            func=append_program_block,
+        ),
+        Tool(
+            name="update_reserve",
+            description=(
+                "Ersetzt die Reserve: 15-20 Songs, die ohne Ansagen laufen, falls die Redaktion "
+                "einmal kein Programm liefert. Einmal pro Durchlauf aufrufen, nach denselben Regeln "
+                "auswählen wie das Programm."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"tracks": {"type": "array", "items": track_items}},
+                "required": ["tracks"],
+            },
+            func=update_reserve,
         ),
     ]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.config import (
@@ -20,36 +20,24 @@ class SystemPromptBody(BaseModel):
     text: str
 
 
-def _apply_interval(request: Request, previous: dict, config: dict) -> None:
-    # The scheduler reads the interval only at startup - apply a change right away instead of
-    # silently waiting for the next service restart.
-    previous_interval = previous.get("agent", {}).get("loop_interval_seconds")
-    interval = config.get("agent", {}).get("loop_interval_seconds")
-    if interval and interval != previous_interval:
-        request.app.state.scheduler.reschedule(int(interval))
-
-
 @router.get("")
 def get_config() -> dict:
     return load_config()
 
 
 @router.put("")
-def put_config(config: dict, request: Request) -> dict:
+def put_config(config: dict) -> dict:
     """Replaces the whole config; keys left out fall back to their defaults."""
-    previous = load_config()
     save_config(config)
-    _apply_interval(request, previous, config)
     return {"status": "ok"}
 
 
 @router.patch("")
-def patch_config(partial: dict, request: Request) -> dict:
-    """Deep-merges a partial config (dicts recursively, lists/values replaced), returns the result."""
-    previous = load_config()
-    config = update_config(partial)
-    _apply_interval(request, previous, config)
-    return config
+def patch_config(partial: dict) -> dict:
+    """Deep-merges a partial config (dicts recursively, lists/values replaced), returns the result.
+
+    Everything is re-read per run/segment, so changes apply without a restart."""
+    return update_config(partial)
 
 
 @router.get("/system_prompt")

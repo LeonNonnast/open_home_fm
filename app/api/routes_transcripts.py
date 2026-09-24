@@ -14,11 +14,13 @@ TRANSCRIPTS_DIR = resolve_path("data/transcripts")
 
 
 @router.get("")
-def get_transcripts() -> dict:
-    transcripts = list_transcripts(TRANSCRIPTS_DIR)
+def get_transcripts(desk: str | None = None) -> dict:
+    transcripts = list_transcripts(TRANSCRIPTS_DIR, desk=desk)
     summaries = [
         {
             "id": t["id"],
+            "desk": t.get("desk"),
+            "trigger": t.get("trigger"),
             "created_at": t["created_at"],
             "final_message": t.get("final_message", ""),
             "error": t.get("error"),

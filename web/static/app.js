@@ -119,10 +119,8 @@ function renderDial(config) {
   $("dial-window").textContent = schedule.enabled
     ? `Sendefenster ${schedule.start_time} – ${schedule.end_time} Uhr`
     : "Rund um die Uhr auf Sendung";
-  const interval = config.agent?.loop_interval_seconds ?? 1800;
-  $("dial-interval").textContent = interval >= 60
-    ? `Neuer Durchlauf alle ${Math.round(interval / 60)} min`
-    : `Neuer Durchlauf alle ${interval} s`;
+  const threshold = config.desks?.music?.fill_threshold_minutes ?? 10;
+  $("dial-interval").textContent = `Musikredaktion plant nach, sobald weniger als ${threshold} min Programm übrig sind`;
 }
 
 // ---------- Studio page ----------
@@ -133,7 +131,6 @@ function fillConfigFields(cfg) {
   $("llm-provider").value = cfg.llm?.provider || "ollama";
   $("llm-model").value = cfg.llm?.[$("llm-provider").value]?.model || "";
   $("music-provider").value = cfg.music?.provider || "local";
-  $("loop-interval").value = cfg.agent?.loop_interval_seconds ?? 1800;
   $("schedule-enabled").checked = !!cfg.schedule?.enabled;
   $("schedule-start").value = cfg.schedule?.start_time ?? "06:00";
   $("schedule-end").value = cfg.schedule?.end_time ?? "23:00";
@@ -173,7 +170,6 @@ function agentFields() {
   return {
     llm: { provider, [provider]: { model: $("llm-model").value } },
     music: { provider: $("music-provider").value },
-    agent: { loop_interval_seconds: parseInt($("loop-interval").value, 10) || 1800 },
   };
 }
 
@@ -221,7 +217,7 @@ async function refreshStatus() {
     $("program-meta").textContent = "";
     moderation.hidden = true;
     runError.hidden = true;
-    list.innerHTML = `<li class="empty" style="display:block">Noch kein Sendeablauf. Starte einen Durchlauf oder warte auf den nächsten Takt.</li>`;
+    list.innerHTML = `<li class="empty" style="display:block">Noch nichts eingeplant. Die Musikredaktion plant gleich – oder starte einen Durchlauf.</li>`;
     return;
   }
 
@@ -245,7 +241,7 @@ async function refreshStatus() {
           <span class="title">${esc(s.type === "jingle" ? s.text || s.title : s.title)}</span>
           <span class="dur">${s.type === "jingle" ? "" : fmtDuration(s.duration_seconds)}</span>
         </li>`).join("")
-    : `<li class="empty" style="display:block">Der letzte Durchlauf hat kein Script erzeugt.</li>`;
+    : `<li class="empty" style="display:block">Die Warteschlange ist leer.</li>`;
 }
 
 async function loadPlugins() {
@@ -512,7 +508,12 @@ async function initStudio() {
     btn.disabled = true;
     note($("trigger-note"), "Durchlauf läuft – das dauert meist 10–30 Sekunden.");
     try {
-      await api("/api/status/trigger", { method: "POST" });
+      const res = await api("/api/desks/music/run", { method: "POST" });
+      if (res.status === "skipped" || res.status === "backoff" || res.status === "disabled") {
+        btn.disabled = false;
+        note($("trigger-note"), res.reason || "Gerade nicht möglich.", "err");
+        return;
+      }
       setTimeout(async () => {
         await Promise.all([refreshStatus(), loadHistory()]);
         btn.disabled = false;

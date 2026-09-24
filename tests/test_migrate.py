@@ -85,3 +85,26 @@ def test_unmodified_or_broken_files_are_left_alone(repo: Path):
 def test_no_git_checkout_is_a_noop(config_env: Path):
     (config_env / "config" / "system_prompt.md").write_text("irgendwas", encoding="utf-8")
     assert migrate_user_data(config_env) == []
+
+
+def test_agent_settings_move_to_music_desk(config_env: Path):
+    from app.migrate import migrate_agent_settings
+
+    cfg.write_user_config({
+        "agent": {"loop_interval_seconds": 600, "max_tool_iterations": 30, "no_repeat_minutes": 120},
+        "desks": {"music": {"block_minutes": 25}},
+        "schedule": {"enabled": True},
+    })
+    script = config_env / "data" / "playlists" / "current_script.json"
+    script.parent.mkdir(parents=True)
+    script.write_text("{}", encoding="utf-8")
+
+    changes = migrate_agent_settings(config_env)
+
+    # no_repeat_minutes equals the default: not a user setting, dropped.
+    assert cfg.load_user_config() == {
+        "desks": {"music": {"block_minutes": 25, "max_tool_iterations": 30}},
+        "schedule": {"enabled": True},
+    }
+    assert "agent.loop_interval_seconds entfernt" in changes and not script.exists()
+    assert migrate_agent_settings(config_env) == []

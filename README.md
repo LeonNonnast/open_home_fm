@@ -2,34 +2,48 @@
 
 Lokaler, plugin-basierter Radio-Agent für einen von einem Raspberry Pi gehosteten FM-Sender.
 
-Ein Agent-Loop läuft in regelmäßigen Abständen, liest Hörerwünsche (Text oder per Sprache
-eingereicht), nutzt Tools (Musiksuche, Wetter, News, eigene Plugins, ...) und baut daraus ein
-Sendeprogramm ("Script") aus Songs und kurzen gesprochenen Einspielern. Ein davon unabhängiger,
-deterministischer Player spielt dieses Script strikt der Reihe nach ab.
+Eine KI-Musikredaktion plant das Programm in Blöcken aus Songs und kurzen gesprochenen
+Einspielern und hängt sie an eine fortlaufende Warteschlange an - immer dann, wenn das
+eingeplante Programm knapp wird. Ein davon unabhängiger, deterministischer Player spielt die
+Warteschlange durchgehend ab; fällt das LLM aus, läuft Füllprogramm weiter.
 
 ## Architektur
 
 ```
 Web-UI (web/)  ──┐
-                 ├─> FastAPI (app/main.py) ─┬─> AgentScheduler ─> AgentLoop (app/agent/loop.py)
-Inbox (Text/STT) ┘                          │      │                 │
-                                             │      │   LLM (Ollama/Anthropic) + Tools
-                                             │      │   (Musik-Tools, TTS, Plugins aus ./plugins)
-                                             │      │                 │
-                                             │      │                 v
-                                             │      │   data/playlists/current_script.json
-                                             │      │                 │
-                                             └─> ScriptPlayer (app/audio/player.py) <──┘
-                                                    spielt das Script deterministisch ab
+                 ├─> FastAPI (app/main.py) ─┬─> DeskScheduler (app/scheduler.py)
+Inbox (Text/STT) ┘                          │     Füllstand-Watcher 30 s, Heartbeat 60 min, Sendebeginn
+                                             │      │
+                                             │      v
+                                             │   DeskRunner (app/agent/desk.py): Musikredaktion
+                                             │     LLM (Ollama/Anthropic) + Tools (Musik, TTS, Plugins)
+                                             │      │ append_program_block / update_reserve
+                                             │      v
+                                             │   data/queue.json (+ player_cursor.json, reserve.json)
+                                             │      │
+                                             └─> QueuePlayer (app/audio/player.py)
+                                                    spielt Segment für Segment, Füllprogramm, Skip
 ```
 
-- **Generierung** (nicht-deterministisch): `AgentScheduler` weckt `AgentLoop.run_once()` alle
-  `agent.loop_interval_seconds` (config.yaml). Der Loop liest neue Wünsche aus `data/inbox/`,
-  lässt das LLM mit Tools arbeiten und ruft am Ende `set_playback_script` auf, was
-  `data/playlists/current_script.json` schreibt.
-- **Wiedergabe** (deterministisch): `ScriptPlayer` läuft als eigener Hintergrund-Thread, pollt
-  diese Datei und spielt neue Scripts Segment für Segment ab - unabhängig davon, ob das LLM
-  gerade läuft, langsam ist oder fehlschlägt.
+- **Planung** (nicht-deterministisch): Es gibt keinen festen Takt mehr. Der Scheduler prüft
+  alle 30 s den Füllstand; sinkt das eingeplante Programm unter
+  `desks.music.fill_threshold_minutes` (Standard 10), plant die Musikredaktion einen Block von
+  `block_minutes` (20) und hängt ihn hinten an - höchstens bis `max_queued_program_minutes`
+  (45). Zusätzlich läuft sie zum Sendebeginn, stündlich (Heartbeat) und bei neuen Wünschen.
+  Songs aus den letzten `no_repeat_minutes` und bereits eingeplante Songs werden entfernt,
+  Ansagen höchstens alle `songs_per_announcement` Songs, auch über Blockgrenzen hinweg - die
+  Redaktion knüpft an statt neu zu begrüßen. Nach Fehlern pausiert sie 1, 2, 5, 10 min.
+- **Wiedergabe** (deterministisch): `QueuePlayer` läuft als eigener Hintergrund-Thread und wählt
+  vor jedem Segment neu (Spuren `urgent` > `reply` > `news` > `program` > `filler`). Nach einem
+  Neustart geht es mit dem nächsten Segment weiter. Songs zählen erst nach 30 s als gespielt.
+  Brechen 3 Segmente in Folge nach < 10 s ab (z.B. Spotify-Gerät weg), pausiert der Player 60 s.
+- **Füllprogramm**: Ist kein Programm da, spielt der Player die **Reserve** (`data/reserve.json`,
+  15-20 Songs, bei jedem Lauf von der Musikredaktion gepflegt), danach zufällige Songs aus den
+  **Lieblings-Playlists** (`music.favorite_playlists`, Playlist-IDs bzw. Ordnernamen der
+  lokalen Bibliothek) oder - lokal ohne Favoriten - aus der ganzen Bibliothek. Sobald ein
+  Programmblock da ist, übernimmt er am nächsten Song-Ende.
+- **Ein Prozess, ein Worker**: Locks, Redaktions- und Player-Status liegen im Speicher - uvicorn
+  immer mit genau einem Worker starten (Standard; kein `--workers`).
 
 ## Plugin-System
 
@@ -56,18 +70,21 @@ Mitgelieferte Plugins mit Einrichtung:
   ein-/ausschalten, dimmen und färben (z.B. Stimmung passend zur Musik). Standardmäßig aus, bis
   es eingerichtet ist.
 
-Mit `context: true` (+ optional `context_args`) im Manifest wird ein Plugin bei jedem
-Durchlauf automatisch ausgeführt und sein Ergebnis direkt in den Input des Agenten geschrieben -
-es muss dafür nicht extra als Tool aufgerufen werden (bleibt aber zusätzlich aufrufbar, z.B. für
-abweichende Parameter). `plugins/weather` und `plugins/news` nutzen das bereits.
+Welche Plugins eine Redaktion nutzen darf, steht in `desks.<redaktion>.plugins`; Plugins in
+`desks.<redaktion>.context_plugins` werden bei jedem Durchlauf automatisch (mit den
+`context_args` aus dem Manifest) ausgeführt und ihr Ergebnis direkt in den Input geschrieben -
+sie müssen dafür nicht extra als Tool aufgerufen werden (bleiben aber zusätzlich aufrufbar, z.B.
+für abweichende Parameter). Die Musikredaktion lädt standardmäßig das Wetter automatisch; die
+Hue-Steuerung ist für sie nicht freigegeben (kommt mit der Leitstelle).
 
 ## Lauf-Historie
 
 Jeder Durchlauf speichert seine vollständige Nachrichten-Historie (System-/User-/Assistant-/
-Tool-Nachrichten) unter `data/transcripts/`. Der Agent bekommt bei jedem neuen Durchlauf
-automatisch eine kompakte Zusammenfassung der letzten drei Läufe (Wünsche, Ansage, gebautes
-Script) in den Kontext geladen, sodass er bei unveränderter Lage dasselbe Programm beibehalten
-oder es gezielt um Neues ergänzen kann. Sichtbar über den "Verlauf"-Bereich der Web-UI.
+Tool-Nachrichten) unter `data/transcripts/`, je Redaktion (`desk`). Die Redaktion bekommt bei
+jedem neuen Durchlauf automatisch eine kompakte Zusammenfassung ihrer letzten drei Läufe
+(Wünsche, Ansage, eingeplante Segmente) in den Kontext geladen, dazu das Ende der
+Warteschlange, sodass sie das Programm fortsetzt statt es zu wiederholen. Sichtbar über den
+"Verlauf"-Bereich der Web-UI (`GET /api/transcripts?desk=music`).
 
 ## Setup (Raspberry Pi)
 
@@ -114,7 +131,7 @@ cd open_home_fm
 ```
 
 Das Script prüft die [Voraussetzungen](#voraussetzungen), installiert die Python-Abhängigkeiten, fragt interaktiv die nötige
-Konfiguration ab (LLM-Provider + API-Key, Musikquelle, Stimme, Audio-Ausgang, Loop-Intervall,
+Konfiguration ab (LLM-Provider + API-Key, Musikquelle, Stimme, Audio-Ausgang,
 Plugins) und schreibt `.env` sowie `data/config.yaml` entsprechend. Danach direkt startklar:
 
 ```
@@ -148,7 +165,8 @@ Installation dasselbe Schnell-Update als Standard an.
 - Ältere Installationen, bei denen das Web-UI noch in `config/config.yaml`/`config/system_prompt.md`
   geschrieben hat, werden beim Update (oder App-Start nach einem manuellen `git pull`) automatisch
   umgezogen: die lokalen Werte landen in `data/`, die Repo-Dateien werden zurückgesetzt. Manuell:
-  `.venv/bin/python -m app.migrate`.
+  `.venv/bin/python -m app.migrate`. Beim App-Start werden außerdem `agent.max_tool_iterations`/
+  `agent.no_repeat_minutes` nach `desks.music.*` verschoben; `agent.loop_interval_seconds` entfällt.
 
 ### Manuelles Setup / Details
 
@@ -185,11 +203,13 @@ Installation dasselbe Schnell-Update als Standard an.
    ```
    .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
-   Für Dauerbetrieb einen systemd-Service einrichten, der diesen Befehl beim Boot startet.
+   Für Dauerbetrieb einen systemd-Service einrichten, der diesen Befehl beim Boot startet
+   (genau ein Worker, siehe [Architektur](#architektur)).
 
 ## Entwicklung
 
-- Manuellen Loop-Durchlauf testen (ohne Scheduler): `python scripts/run_agent_once.py`
+- Manuellen Redaktions-Durchlauf testen (ohne Scheduler, hängt an `data/queue.json` an):
+  `python scripts/run_agent_once.py [music]`
 - Agent-Verhalten anpassen: Prompt über die Web-UI (landet in `data/prompts/music.md`, Standard:
   `config/desks/music.md`)
 - Defaults in `config/config.yaml` ändern: vor dem nächsten App-Start/Update committen - eine

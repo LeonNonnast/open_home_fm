@@ -1,6 +1,7 @@
 """Shared fakes and fixtures: no real Spotify, Ollama, Piper or config files are touched."""
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +11,15 @@ import yaml
 from app import config as cfg
 from app.agent.llm import LLMMessage, LLMProvider, ToolCall
 from app.audio.tts import TTSEngine
-from app.music.base import Device, MusicProvider, Playlist, Track
+from app.music.base import Device, MusicProvider, PlaybackResult, Playlist, Track
 
 DEFAULTS = {
-    "agent": {"loop_interval_seconds": 1800, "max_tool_iterations": 20, "no_repeat_minutes": 120},
+    "desks": {"music": {"enabled": True, "fill_threshold_minutes": 10, "block_minutes": 20,
+                        "max_queued_program_minutes": 45, "songs_per_announcement": 3,
+                        "no_repeat_minutes": 120, "max_tool_iterations": 20}},
     "schedule": {"enabled": False, "start_time": "06:00", "end_time": "23:00"},
     "llm": {"provider": "ollama", "ollama": {"model": "m1", "host": ""}, "anthropic": {"model": "a1"}},
-    "music": {"provider": "local", "local": {"library_path": "data/library"}},
+    "music": {"provider": "local", "local": {"library_path": "data/library"}, "favorite_playlists": []},
     "audio": {"output_device": "default", "jingle_cache_dir": "data/audio_cache"},
     "tts": {"engine": "piper", "piper": {"binary": "piper", "voice_model": "models/tts/x.onnx", "speaker": None}},
     "plugins": {"disabled": ["control_hue_lights"], "settings": {}},
@@ -41,13 +44,19 @@ def config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class FakeMusicProvider(MusicProvider):
-    """In-memory catalog; search matches case-insensitively on "title - artist"."""
+    """In-memory catalog; search matches case-insensitively on "title - artist".
+
+    play_until returns at once, unless `block` is set: then it waits for the stop event (like a
+    long song) and reports `finished=False` when stopped."""
 
     name = "fake"
 
-    def __init__(self, tracks: list[Track] | None = None):
+    def __init__(self, tracks: list[Track] | None = None, block: bool = False, library: bool = False):
         self.tracks = tracks or []
         self.played: list[Track] = []
+        self.block = block
+        self.library = library
+        self.playing = threading.Event()
 
     def search_tracks(self, query: str, limit: int = 10) -> list[Track]:
         q = query.casefold()
@@ -69,8 +78,17 @@ class FakeMusicProvider(MusicProvider):
     def play(self, track: Track, device: Device | None = None) -> None:
         self.played.append(track)
 
-    def play_and_wait(self, track: Track, device: Device | None = None) -> None:
+    def play_until(self, track: Track, stop_event: threading.Event, device: Device | None = None) -> PlaybackResult:
         self.played.append(track)
+        if not self.block:
+            return PlaybackResult(finished=True, position_seconds=track.duration_seconds or 0)
+        self.playing.set()
+        stop_event.wait(30)
+        self.playing.clear()
+        return PlaybackResult(finished=not stop_event.is_set(), position_seconds=0)
+
+    def library_tracks(self) -> list[Track]:
+        return list(self.tracks) if self.library else []
 
     def stop(self, device: Device | None = None) -> None:
         pass

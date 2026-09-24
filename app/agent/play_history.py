@@ -1,8 +1,7 @@
 """Which tracks actually went on air, and when - so a run doesn't plan songs that just played.
 
-Written by the player (the only side that knows what really played, since scripts get cut short
-when a newer one arrives) and read by the agent loop. Plain JSON on disk, like the script itself,
-so the two halves still share no in-process state.
+Written by the player (the only side that knows what really played - skipped songs don't count)
+and read by the desks and the filler program. Plain JSON on disk, like the queue itself.
 """
 from __future__ import annotations
 

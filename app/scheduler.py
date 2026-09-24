@@ -1,4 +1,13 @@
-"""Wakes the agent loop up on a fixed interval (agent.loop_interval_seconds in config.yaml)."""
+"""Decides when desks run. Replaces the old fixed interval (agent.loop_interval_seconds).
+
+Music desk:
+- fill-level watcher every 30 s: program left < `fill_threshold_minutes` ⇒ run,
+- heartbeat every 60 min (picks up wishes, refreshes the reserve),
+- right at the broadcast start.
+Every trigger respects the broadcast window and `max_queued_program_minutes` - neither the
+watcher nor "run now" stacks the queue beyond that. Locking, follow-up runs and backoff are
+the DeskRunner's job (app/agent/desk.py).
+"""
 from __future__ import annotations
 
 import logging
@@ -6,42 +15,128 @@ from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.agent.loop import AgentLoop
+from app.agent.desk import DESK_LABELS, DESKS, DeskConfig, DeskRunner
 from app.config import is_broadcast_time, load_config
 
 logger = logging.getLogger(__name__)
 
+WATCH_SECONDS = 30
+HEARTBEAT_MINUTES = 60
 
-class AgentScheduler:
-    def __init__(self, agent_loop: AgentLoop):
-        self.agent_loop = agent_loop
+
+class DeskScheduler:
+    def __init__(self, runner: DeskRunner):
+        self.runner = runner
         self._scheduler = BackgroundScheduler()
-        self._job = None
-
-    def _tick(self) -> None:
-        config = load_config()
-        if not is_broadcast_time(config):
-            logger.info("Outside configured broadcast hours, skipping agent loop tick")
-            return
-        try:
-            logger.info("Agent loop tick starting")
-            self.agent_loop.run_once()
-            logger.info("Agent loop tick finished")
-        except Exception:
-            logger.exception("Agent loop tick failed")
+        self._heartbeat_job = None
+        self._was_on_air: bool | None = None
 
     def start(self) -> None:
-        interval = load_config().get("agent", {}).get("loop_interval_seconds", 1800)
-        # next_run_time=None would add the job *paused* in APScheduler 3.x, so it would never fire.
-        # Run the first tick right away instead of waiting a full interval after startup.
-        self._job = self._scheduler.add_job(self._tick, "interval", seconds=interval, next_run_time=datetime.now())
+        # next_run_time=None would add the job *paused* in APScheduler 3.x - check right away.
+        self._scheduler.add_job(self.watch, "interval", seconds=WATCH_SECONDS, next_run_time=datetime.now(),
+                                max_instances=1, coalesce=True)
+        self._heartbeat_job = self._scheduler.add_job(self.heartbeat, "interval", minutes=HEARTBEAT_MINUTES,
+                                                      max_instances=1, coalesce=True)
         self._scheduler.start()
-        logger.info("Agent scheduler started, interval=%ds", interval)
-
-    def reschedule(self, interval_seconds: int) -> None:
-        if self._job is not None:
-            self._job.reschedule(trigger="interval", seconds=interval_seconds)
-            logger.info("Agent scheduler rescheduled, interval=%ds", interval_seconds)
+        logger.info("Desk scheduler started (fill watcher every %ds, heartbeat every %d min)",
+                    WATCH_SECONDS, HEARTBEAT_MINUTES)
 
     def stop(self) -> None:
         self._scheduler.shutdown(wait=False)
+
+    # ---------- music desk conditions ----------
+
+    @staticmethod
+    def _music() -> DeskConfig:
+        return DeskConfig.from_config("music", load_config())
+
+    def _remaining_minutes(self) -> float:
+        return self.runner.remaining_program_seconds() / 60
+
+    def below_threshold(self) -> bool:
+        return self._remaining_minutes() < self._music().settings["fill_threshold_minutes"]
+
+    def under_cap(self) -> bool:
+        return self._remaining_minutes() < self._music().settings["max_queued_program_minutes"]
+
+    def _music_may_run(self) -> bool:
+        return is_broadcast_time(load_config()) and self.under_cap()
+
+    # ---------- triggers ----------
+
+    def request_run(self, name: str, trigger: str, force: bool = False) -> dict:
+        """Runs desk `name` through its lock; for the API and all timed triggers."""
+        if name not in DESKS:
+            raise KeyError(name)
+        if name == "music":
+            if not is_broadcast_time(load_config()):
+                return {"status": "skipped", "reason": "Sendepause – die Musikredaktion plant erst zum Sendebeginn."}
+            if not self.under_cap():
+                cap = self._music().settings["max_queued_program_minutes"]
+                return {"status": "skipped", "reason": f"Warteschlange voll (Obergrenze {cap} Minuten Programm)."}
+            condition = self._music_may_run
+        else:
+            condition = None
+        status = self.runner.request(name, trigger, condition=condition, force=force)
+        reasons = {
+            "queued": "läuft gerade – ein weiterer Durchlauf ist vorgemerkt",
+            "backoff": "nach Fehlern kurz pausiert",
+            "disabled": "Redaktion ist ausgeschaltet",
+        }
+        return {"status": status, "reason": reasons.get(status)}
+
+    def watch(self) -> None:
+        try:
+            config = load_config()
+            on_air = is_broadcast_time(config)
+            was_on_air, self._was_on_air = self._was_on_air, on_air
+            if not on_air:
+                return
+            if was_on_air is False:
+                logger.info("Broadcast start - music desk runs right away")
+                self.request_run("music", "broadcast_start")
+                return
+            if self.below_threshold():
+                # Re-checked before the run and before a follow-up: a block appended meanwhile
+                # makes the queued run unnecessary.
+                if self.under_cap():
+                    status = self.runner.request(
+                        "music", "fill", condition=lambda: self._music_may_run() and self.below_threshold()
+                    )
+                    if status == "started":
+                        logger.info("Program below %s min - music desk started",
+                                    self._music().settings["fill_threshold_minutes"])
+        except Exception:
+            logger.exception("Fill-level watcher failed")
+
+    def heartbeat(self) -> None:
+        try:
+            self.request_run("music", "heartbeat")
+        except Exception:
+            logger.exception("Heartbeat trigger failed")
+
+    # ---------- status ----------
+
+    def desk_status(self, name: str) -> dict:
+        config = load_config()
+        desk = DeskConfig.from_config(name, config)
+        status = self.runner.status(name)
+        data = {"name": name, "label": DESK_LABELS.get(name, name), "enabled": desk.enabled, **status}
+        if name == "music":
+            s = desk.settings
+            heartbeat_at = self._heartbeat_job.next_run_time if self._heartbeat_job is not None else None
+            data["next_trigger_at"] = status["backoff_until"] or (heartbeat_at.isoformat() if heartbeat_at else None)
+            data["next_trigger"] = (
+                "nächster Versuch nach Fehler" if status["backoff_until"]
+                else f"wenn das Programm unter {s['fill_threshold_minutes']} min fällt, spätestens zum Heartbeat"
+            )
+            data["fill"] = {
+                "remaining_seconds": round(self.runner.remaining_program_seconds()),
+                "threshold_minutes": s["fill_threshold_minutes"],
+                "cap_minutes": s["max_queued_program_minutes"],
+                "block_minutes": s["block_minutes"],
+            }
+        return data
+
+    def desks_status(self) -> list[dict]:
+        return [self.desk_status(name) for name in DESKS]

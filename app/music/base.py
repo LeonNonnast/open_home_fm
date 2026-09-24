@@ -6,6 +6,7 @@ for the rest of the system.
 """
 from __future__ import annotations
 
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -35,6 +36,12 @@ class Device:
     id: str
     name: str
     is_active: bool = False
+
+
+@dataclass
+class PlaybackResult:
+    finished: bool  # False: stopped via the stop event (skip, shutdown)
+    position_seconds: float
 
 
 class MusicProvider(ABC):
@@ -69,15 +76,27 @@ class MusicProvider(ABC):
     def play(self, track: Track, device: Device | None = None) -> None:
         """Start playback. Must return promptly (used for ad-hoc 'play now' requests)."""
 
-    def play_and_wait(self, track: Track, device: Device | None = None) -> None:
-        """Play a track and block until it has (roughly) finished.
+    def play_until(self, track: Track, stop_event: threading.Event, device: Device | None = None) -> PlaybackResult:
+        """Play a track and block until it has (roughly) finished or `stop_event` is set.
 
-        Used by the deterministic script player, which needs segments to play back to back.
-        The default implementation is duration-based; providers with a real playback-status
-        API (e.g. Spotify) may override this with tighter polling.
+        Used by the queue player, which needs segments to play back to back and must be able to
+        skip a song or shut down mid-song. The default implementation is duration-based;
+        providers with a real playback-status API (e.g. Spotify) override it.
         """
         self.play(track, device)
-        time.sleep(track.duration_seconds or DEFAULT_WAIT_SECONDS)
+        started = time.monotonic()
+        if stop_event.wait(track.duration_seconds or DEFAULT_WAIT_SECONDS):
+            self.stop(device)
+            return PlaybackResult(finished=False, position_seconds=time.monotonic() - started)
+        return PlaybackResult(finished=True, position_seconds=time.monotonic() - started)
+
+    def play_and_wait(self, track: Track, device: Device | None = None) -> None:
+        """Blocking playback without a way to stop it early."""
+        self.play_until(track, threading.Event(), device)
+
+    def library_tracks(self) -> list[Track]:
+        """Every track of the source, for the filler program. Empty where that's not feasible (Spotify)."""
+        return []
 
     @abstractmethod
     def stop(self, device: Device | None = None) -> None:

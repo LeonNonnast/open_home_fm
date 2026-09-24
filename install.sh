@@ -403,10 +403,6 @@ echo ""
 info "Audio-Ausgang"
 AUDIO_OUTPUT_DEVICE="$(ask "ALSA/Pulse-Ausgabegerät (füttert die FM-Sendekette)" "${AUDIO_OUTPUT_DEVICE:-default}")"
 
-echo ""
-info "Agent-Loop"
-LOOP_INTERVAL="$(ask "Intervall zwischen Durchläufen in Sekunden" "${LOOP_INTERVAL:-1800}")"
-
 # ---------------------------------------------------------------------------
 # 4. Write .env
 # ---------------------------------------------------------------------------
@@ -434,15 +430,14 @@ chmod 600 "$ENV_FILE"
 info "Schreibe data/config.yaml"
 .venv/bin/python3 - "$LLM_PROVIDER" "${OLLAMA_MODEL:-}" "${OLLAMA_HOST:-}" "${ANTHROPIC_MODEL:-claude-sonnet-5}" \
   "$MUSIC_PROVIDER" "${SPOTIFY_DEVICE_NAME:-open-home-fm}" "${LIBRARY_PATH:-data/library}" \
-  "$AUDIO_OUTPUT_DEVICE" "$TTS_ENGINE" "$PIPER_BINARY" "$PIPER_VOICE_MODEL" \
-  "$LOOP_INTERVAL" <<'PYEOF'
+  "$AUDIO_OUTPUT_DEVICE" "$TTS_ENGINE" "$PIPER_BINARY" "$PIPER_VOICE_MODEL" <<'PYEOF'
 import sys
 
 from app.config import load_config, save_config
 
 (llm_provider, ollama_model, ollama_host, anthropic_model,
  music_provider, spotify_device, library_path,
- audio_output, tts_engine, piper_binary, piper_voice_model, loop_interval) = sys.argv[1:]
+ audio_output, tts_engine, piper_binary, piper_voice_model) = sys.argv[1:]
 
 config = load_config()
 
@@ -460,8 +455,6 @@ config["audio"]["output_device"] = audio_output
 config["tts"]["engine"] = tts_engine
 config["tts"]["piper"]["binary"] = piper_binary
 config["tts"]["piper"]["voice_model"] = piper_voice_model
-
-config["agent"]["loop_interval_seconds"] = int(loop_interval)
 
 save_config(config)
 print("data/config.yaml aktualisiert.")

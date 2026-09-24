@@ -23,9 +23,11 @@ JSON Schema is *not* enforced here - keep plugins defensive) and must return a s
 fed back to the LLM as the tool result.
 
 `context: true` marks a plugin as always-relevant: instead of waiting for the agent to decide to
-call it, the agent loop calls `execute(**context_args)` once at the start of every iteration and
-injects the result directly into the input, so the information is available without a tool call.
-It remains callable as a normal tool too (e.g. to ask about a different city than the default).
+call it, a run calls `execute(**context_args)` once at its start and injects the result directly
+into the input, so the information is available without a tool call. It remains callable as a
+normal tool too (e.g. to ask about a different city than the default). Which plugins a desk
+uses - and which of them as context - is decided per desk (`desks.<name>.plugins` /
+`context_plugins`, see app/agent/desk.py); the manifest flag is informational for the web UI.
 
 Optionally `plugin.py` also defines `install(setup) -> dict`, an interactive setup step the
 installer runs (see app/agent/plugin_setup.py) - the loader itself ignores it.
