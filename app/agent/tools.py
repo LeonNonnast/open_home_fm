@@ -26,6 +26,9 @@ class Tool:
     # It stays additionally callable as a regular tool, e.g. to re-run it with different args.
     context: bool = False
     context_args: dict[str, Any] = field(default_factory=dict)
+    # Plugins that *do* something (lights) rather than look something up: the dispatch desk runs
+    # them as direct actions shown in the call, and never caches their result.
+    action: bool = False
 
     def to_schema(self) -> dict[str, Any]:
         """OpenAI/Ollama-compatible function schema."""

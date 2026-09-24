@@ -33,7 +33,7 @@ def get_status(request: Request) -> dict:
     for d in scheduler.desks_status():
         desks[d["name"]] = {k: d.get(k) for k in (
             "state", "enabled", "last_success_at", "consecutive_failures", "last_error", "backoff_until",
-            "next_trigger_at", "fill",
+            "next_trigger_at", "fill", "open_calls", "last_run_at",
         )}
     return {
         "on_air": is_broadcast_time(config),

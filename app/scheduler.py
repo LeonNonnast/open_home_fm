@@ -5,6 +5,11 @@ Music desk:
 - heartbeat every 60 min (picks up wishes, refreshes the reserve),
 - right at the broadcast start.
 The fill watcher holds off while the player's circuit breaker is tripped (source unreachable).
+
+Dispatch desk: right away for every new call (the calls API asks), plus a watcher every 10 s
+that syncs the calls with the queue, expires calls nobody could handle and re-requests a run
+while calls are open (which also retries after an LLM failure, gated by the desk's backoff of
+10 s / 30 s / 1 min). It ignores the broadcast window.
 Every trigger respects the broadcast window and `max_queued_program_minutes` - neither the
 watcher nor "run now" stacks the queue beyond that. Locking, follow-up runs and backoff are
 the DeskRunner's job (app/agent/desk.py).
@@ -23,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 WATCH_SECONDS = 30
 HEARTBEAT_MINUTES = 60
+CALLS_WATCH_SECONDS = 10
 
 
 class DeskScheduler:
@@ -38,9 +44,11 @@ class DeskScheduler:
                                 max_instances=1, coalesce=True)
         self._heartbeat_job = self._scheduler.add_job(self.heartbeat, "interval", minutes=HEARTBEAT_MINUTES,
                                                       max_instances=1, coalesce=True)
+        self._scheduler.add_job(self.watch_calls, "interval", seconds=CALLS_WATCH_SECONDS,
+                                next_run_time=datetime.now(), max_instances=1, coalesce=True)
         self._scheduler.start()
-        logger.info("Desk scheduler started (fill watcher every %ds, heartbeat every %d min)",
-                    WATCH_SECONDS, HEARTBEAT_MINUTES)
+        logger.info("Desk scheduler started (fill watcher every %ds, heartbeat every %d min, calls every %ds)",
+                    WATCH_SECONDS, HEARTBEAT_MINUTES, CALLS_WATCH_SECONDS)
 
     def stop(self) -> None:
         self._scheduler.shutdown(wait=False)
@@ -76,6 +84,8 @@ class DeskScheduler:
                 cap = self._music().settings["max_queued_program_minutes"]
                 return {"status": "skipped", "reason": f"Warteschlange voll (Obergrenze {cap} Minuten Programm)."}
             condition = self._music_may_run
+        elif name == "dispatch":
+            condition = self.runner.calls.has_pending
         else:
             condition = None
         status = self.runner.request(name, trigger, condition=condition, force=force)
@@ -113,6 +123,17 @@ class DeskScheduler:
         except Exception:
             logger.exception("Fill-level watcher failed")
 
+    def watch_calls(self) -> None:
+        try:
+            calls = self.runner.calls
+            minutes = DeskConfig.from_config("dispatch", load_config()).settings["reply_expires_minutes"]
+            calls.expire_stale(int(minutes))
+            calls.sync()
+            if calls.has_pending() and not self.runner.is_running("dispatch"):
+                self.runner.request("dispatch", "poll", condition=calls.has_pending)
+        except Exception:
+            logger.exception("Calls watcher failed")
+
     def heartbeat(self) -> None:
         try:
             self.request_run("music", "heartbeat")
@@ -140,6 +161,15 @@ class DeskScheduler:
                 "cap_minutes": s["max_queued_program_minutes"],
                 "block_minutes": s["block_minutes"],
             }
+        elif name == "dispatch":
+            calls = self.runner.calls.all()
+            data["open_calls"] = sum(c["status"] in ("new", "retrying", "processing") for c in calls)
+            data["queued_calls"] = sum(c["status"] == "queued" for c in calls)
+            data["last_call_at"] = calls[0]["created_at"] if calls else None
+            data["next_trigger_at"] = status["backoff_until"]
+            data["next_trigger"] = (
+                "nächster Versuch nach Fehler" if status["backoff_until"] else "sofort bei jedem Zwischenruf"
+            )
         return data
 
     def desks_status(self) -> list[dict]:

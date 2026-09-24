@@ -1,73 +1,48 @@
-"""Where listener wishes enter the system, as text or as a voice recording (STT'd immediately).
+"""Deprecated alias of the calls API for the pre-Phase-2 "Rufen" page - removed with the next version.
 
-The music desk only ever reads `*.txt` files from data/inbox (see app/agent/desk.py), so both
-paths converge on the same plain-text format before the agent ever sees them. A new wish asks
-the music desk to plan right away (within the queue cap). Replaced by the calls in Phase 2.
+POST /api/inbox/text and /api/inbox/voice create calls (the voice one transcribes synchronously
+and skips the confirmation step, like before); GET /api/inbox lists the calls still open.
 """
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timezone
-from pathlib import Path
-
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from app.config import resolve_path
-
-logger = logging.getLogger(__name__)
+from app.api.routes_calls import create_text_call, save_upload, wake_dispatch
 
 router = APIRouter(prefix="/api/inbox", tags=["inbox"])
 
-INBOX_DIR = resolve_path("data/inbox")
+OPEN_STATUSES = ("new", "processing", "retrying", "queued")
 
 
 class TextWishBody(BaseModel):
     text: str
+    author: str | None = None
 
 
 @router.get("")
-def list_inbox() -> dict:
-    INBOX_DIR.mkdir(parents=True, exist_ok=True)
-    items = [
-        {"filename": path.name, "text": path.read_text(encoding="utf-8")}
-        for path in sorted(INBOX_DIR.glob("*.txt"))
-    ]
-    return {"items": items}
-
-
-def _wake_music_desk(request: Request) -> None:
-    scheduler = getattr(request.app.state, "scheduler", None)
-    if scheduler is None:
-        return
-    try:
-        scheduler.request_run("music", "wish")
-    except Exception:
-        logger.exception("Could not trigger the music desk for a new wish")
+def list_inbox(request: Request) -> dict:
+    calls = [c for c in reversed(request.app.state.calls.all()) if c["status"] in OPEN_STATUSES]
+    # `filename` starts with the UTC stamp the old page parses for its time column.
+    return {"items": [{"filename": c["id"], "text": c["text"]} for c in calls]}
 
 
 @router.post("/text")
 def submit_text(body: TextWishBody, request: Request) -> dict:
-    INBOX_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    path = INBOX_DIR / f"{stamp}.txt"
-    path.write_text(body.text.strip(), encoding="utf-8")
-    _wake_music_desk(request)
-    return {"status": "ok", "filename": path.name}
+    call = create_text_call(request, body.text, body.author)
+    return {"status": "ok", "filename": call["id"], "call_id": call["id"]}
 
 
 @router.post("/voice")
 async def submit_voice(request: Request, file: UploadFile = File(...)) -> dict:
-    INBOX_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    ext = Path(file.filename or "recording.webm").suffix or ".webm"
-    audio_path = INBOX_DIR / f"{stamp}{ext}"
-    audio_path.write_bytes(await file.read())
-
+    calls = request.app.state.calls
+    audio_path = save_upload(calls, file, await file.read())
     stt_engine = request.app.state.stt_engine
-    text = stt_engine.transcribe(audio_path)
-
-    text_path = INBOX_DIR / f"{stamp}.txt"
-    text_path.write_text(text, encoding="utf-8")
-    _wake_music_desk(request)
-    return {"status": "ok", "text": text, "filename": text_path.name}
+    if stt_engine is None:
+        raise HTTPException(status_code=503, detail="Spracherkennung nicht verfügbar")
+    text = stt_engine.transcribe(audio_path).strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Nichts verstanden")
+    call = calls.create(text, source="voice", audio_file=str(audio_path))
+    wake_dispatch(request)
+    return {"status": "ok", "text": text, "filename": call["id"], "call_id": call["id"]}

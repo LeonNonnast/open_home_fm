@@ -16,7 +16,10 @@ from app.music.base import Device, MusicProvider, PlaybackResult, Playlist, Trac
 DEFAULTS = {
     "desks": {"music": {"enabled": True, "fill_threshold_minutes": 10, "block_minutes": 20,
                         "max_queued_program_minutes": 45, "songs_per_announcement": 3,
-                        "no_repeat_minutes": 120, "max_tool_iterations": 20}},
+                        "no_repeat_minutes": 120, "max_tool_iterations": 20},
+              "dispatch": {"enabled": True, "allow_interrupt": True, "min_minutes_between_interrupts": 10,
+                           "reply_expires_minutes": 30, "wish_default_valid_hours": 24, "max_tool_iterations": 6,
+                           "plugins": ["control_hue_lights", "get_weather"]}},
     "schedule": {"enabled": False, "start_time": "06:00", "end_time": "23:00"},
     "llm": {"provider": "ollama", "ollama": {"model": "m1", "host": ""}, "anthropic": {"model": "a1"}},
     "music": {"provider": "local", "local": {"library_path": "data/library"}, "favorite_playlists": []},
@@ -25,6 +28,7 @@ DEFAULTS = {
     "plugins": {"disabled": ["control_hue_lights"], "settings": {}},
 }
 DEFAULT_PROMPT = "Du bist der Standard-Redakteur.\n"
+DISPATCH_PROMPT = "Du bist die Leitstelle.\n"
 
 
 @pytest.fixture
@@ -34,6 +38,7 @@ def config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "data").mkdir()
     (tmp_path / "config" / "config.yaml").write_text(yaml.safe_dump(DEFAULTS, sort_keys=False), encoding="utf-8")
     (tmp_path / "config" / "desks" / "music.md").write_text(DEFAULT_PROMPT, encoding="utf-8")
+    (tmp_path / "config" / "desks" / "dispatch.md").write_text(DISPATCH_PROMPT, encoding="utf-8")
     monkeypatch.setattr(cfg, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(cfg, "DEFAULTS_PATH", tmp_path / "config" / "config.yaml")
     monkeypatch.setattr(cfg, "USER_CONFIG_PATH", tmp_path / "data" / "config.yaml")

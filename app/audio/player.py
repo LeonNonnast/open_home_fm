@@ -34,10 +34,17 @@ RECORD_AFTER_SECONDS = 30
 # (e.g. the Spotify device vanished and every play returns after one poll) pause the player
 # instead of draining the queue within seconds. The failed program segments are put back
 # (not consumed), and each further trip without a successful segment in between pauses longer.
+# A segment gets at most MAX_SEGMENT_ATTEMPTS fast failures: after that it's given up (logged) and
+# the player moves on, so genuinely broken tracks can't hold the program up until it expires.
+# While tripped (no segment played properly since), a single fresh failure trips again - a real
+# outage then costs at most one new segment per pause.
 BREAKER_SEGMENTS = 3
+MAX_SEGMENT_ATTEMPTS = 2
 SHORT_SEGMENT_SECONDS = 10
 BREAKER_PAUSES = (60, 300, 900)
 LOG_LINES = 12
+# Segment types the music provider plays (episodes are Spotify podcast episodes).
+PLAYABLE_TYPES = ("track", "episode")
 
 MODE_TEXTS = {
     "starting": "startet",
@@ -87,9 +94,13 @@ class QueuePlayer:
         self._notice: str | None = None
         self._log: deque[str] = deque(maxlen=LOG_LINES)
         self._short_streak: list[tuple[str, str, int]] = []  # (item id, lane, index) of failed segments
+        self._attempts: dict[tuple[str, int], int] = {}  # fast failures per (item id, segment index)
         self._breaker_trips = 0
         self._breaker_active = False  # tripped, and no segment played properly since
         self._was_on_air: bool | None = None
+        # Called with (item, "playing" | "played") when an item starts/ends on air - the calls
+        # use it to show "läuft jetzt"/"gesendet 07:14" (app/program/calls.py). Must not raise.
+        self.on_item_event: Callable[[QueueItem, str], None] | None = None
 
     # ---------- lifecycle ----------
 
@@ -151,6 +162,24 @@ class QueuePlayer:
                 remaining = max(0.0, (self._current["duration"] or 0) - (time.time() - self._current["_started"]))
         return self.queue.remaining_program_seconds(current_remaining=remaining)
 
+    def current_remaining_seconds(self) -> float:
+        """Rest of the segment on air (0 when nothing plays)."""
+        with self._state_lock:
+            if not self._current:
+                return 0.0
+            return max(0.0, (self._current["duration"] or 0) - (time.time() - self._current["_started"]))
+
+    def start_estimates(self) -> dict[str, datetime]:
+        return self.queue.start_estimates(self.current_remaining_seconds())
+
+    def _notify(self, item: QueueItem, event: str) -> None:
+        if self.on_item_event is None or not item.call_id:
+            return
+        try:
+            self.on_item_event(item, event)
+        except Exception:
+            logger.exception("Item listener failed for %s (%s)", item.id, event)
+
     def _set_mode(self, mode: str, text: str | None = None) -> None:
         with self._state_lock:
             if (mode, text or MODE_TEXTS[mode]) != (self._mode, self._mode_text):
@@ -207,6 +236,7 @@ class QueuePlayer:
             return
         if index == len(item.segments) - 1:
             self.queue.finish_item(item.id)
+            self._notify(item, "played")
         self._check_breaker(item, index, *outcome)
 
     def _make_filler(self, config: dict) -> QueueItem | None:
@@ -254,9 +284,11 @@ class QueuePlayer:
                 "_started": started,
             }
         self._log_line(f"{'Ansage' if segment.type == 'jingle' else 'Song'}: {segment.title} ({item.lane})")
+        if index == 0:
+            self._notify(item, "playing")
 
         record_timer = None
-        if segment.type == "track" and self.play_history_path is not None:
+        if segment.type in PLAYABLE_TYPES and self.play_history_path is not None:
             record_timer = threading.Timer(
                 RECORD_AFTER_SECONDS, record_played, args=(self.play_history_path, segment.audio_ref, segment.title)
             )
@@ -266,7 +298,7 @@ class QueuePlayer:
         stopped = False
         error = False
         try:
-            if segment.type == "track":
+            if segment.type in PLAYABLE_TYPES:
                 result = self.provider.play_until(self._track(segment), self._skip_event)
                 stopped = not result.finished
             elif segment.type == "jingle":
@@ -291,21 +323,34 @@ class QueuePlayer:
     def _check_breaker(self, item: QueueItem, index: int, elapsed: float, user_stopped: bool, error: bool) -> None:
         segment = item.segments[index]
         # Short jingles are fine - only segments that end far before their expected length count.
-        expected = segment.duration_seconds or (segment.estimated_seconds() if segment.type == "track" else 0)
+        playable = segment.type in PLAYABLE_TYPES
+        expected = segment.duration_seconds or (segment.estimated_seconds() if playable else 0)
         failed = not user_stopped and elapsed < SHORT_SEGMENT_SECONDS and (error or elapsed < expected * 0.5)
         if not failed:
             self._short_streak.clear()
+            self._attempts.clear()
             self._breaker_trips = 0
             self._breaker_active = False
             if self._notice:
                 with self._state_lock:
                     self._notice = None
             return
-        if segment.type == "track":
+        if playable:
             # Never in the play history (< 30 s) - without this the filler picks it again and again.
             self.filler.report_failure(segment.audio_ref)
+        key = (item.id, index)
+        attempts = self._attempts.get(key, 0) + 1
+        self._attempts[key] = attempts
+        if item.lane != "filler" and attempts >= MAX_SEGMENT_ATTEMPTS:
+            # Failed again after a pause: most likely the segment itself is broken. It stays
+            # consumed and the player moves on right away (no new pause for it).
+            self._attempts.pop(key, None)
+            self._log_line(f"aufgegeben nach {attempts} Fehlversuchen: {segment.title}")
+            logger.warning("Giving up on segment %d of %s (%s) after %d failed attempts",
+                           index, item.id, segment.title, attempts)
+            return
         self._short_streak.append((item.id, item.lane, index))
-        if len(self._short_streak) < BREAKER_SEGMENTS:
+        if len(self._short_streak) < BREAKER_SEGMENTS and not self._breaker_active:
             return
         # Most likely the source is down, not the songs: put the program segments back. Filler
         # items aren't - the filler picks a fresh (not just failed) song next time anyway.
@@ -313,6 +358,7 @@ class QueuePlayer:
         for item_id, lane, seg_index in reversed(self._short_streak):
             if lane != "filler" and self.queue.rewind(item_id, seg_index):
                 rewound += 1
+        count = len(self._short_streak)
         self._short_streak.clear()
         pause = self.breaker_pauses[min(self._breaker_trips, len(self.breaker_pauses) - 1)]
         self._breaker_trips += 1
@@ -321,7 +367,7 @@ class QueuePlayer:
         with self._state_lock:
             self._notice = text
         self._set_mode("paused", text)
-        self._log_line(f"Schutzschalter: {BREAKER_SEGMENTS} Segmente in Folge nach < {SHORT_SEGMENT_SECONDS} s beendet, "
+        self._log_line(f"Schutzschalter: {count} Segment(e) in Folge nach < {SHORT_SEGMENT_SECONDS} s beendet, "
                        f"Pause {pause:.0f} s{f', {rewound} Segment(e) bleiben eingeplant' if rewound else ''}")
         self._stop_event.wait(pause)
 

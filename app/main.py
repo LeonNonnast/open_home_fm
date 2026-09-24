@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.desk import DeskRunner
+from app.api.routes_calls import notes_router, router as calls_router, wishes_router
 from app.api.routes_config import router as config_router
 from app.api.routes_desks import router as desks_router
 from app.api.routes_inbox import router as inbox_router
@@ -25,7 +26,7 @@ from app.api.routes_voice import router as voice_router
 from app.audio.player import QueuePlayer
 from app.audio.stt import create_stt_engine
 from app.config import DATA_DIR, ROOT_DIR, load_config
-from app.migrate import migrate_agent_settings, migrate_user_data, outdated_prompt_notice
+from app.migrate import migrate_agent_settings, migrate_inbox, migrate_user_data, outdated_prompt_notice
 from app.music import create_music_provider
 from app.program.queue import ProgramQueue
 from app.scheduler import DeskScheduler
@@ -67,11 +68,24 @@ async def lifespan(app: FastAPI):
     )
     runner = DeskRunner(ROOT_DIR, queue, player=player)
     scheduler = DeskScheduler(runner)
+    # "gesendet 07:14" in the conversation as soon as a reply went on air.
+    player.on_item_event = runner.calls.on_queue_event
+    runner.calls.recover_processing()
+    try:
+        if migrate_inbox(runner.calls, ROOT_DIR):
+            notices.append({
+                "id": "zwischenrufe",
+                "text": "Wünsche heißen jetzt Zwischenrufe: die Leitstelle kümmert sich sofort darum. "
+                        "Offene Wünsche wurden übernommen.",
+            })
+    except Exception:
+        logger.exception("Migrating the inbox to calls failed")
 
     app.state.queue = queue
     app.state.player = player
     app.state.desk_runner = runner
     app.state.scheduler = scheduler
+    app.state.calls = runner.calls
     app.state.notices = notices
     app.state.stt_engine = create_stt_engine(config)
 
@@ -88,6 +102,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="open home fm", lifespan=lifespan)
 
+app.include_router(calls_router)
+app.include_router(wishes_router)
+app.include_router(notes_router)
 app.include_router(config_router)
 app.include_router(desks_router)
 app.include_router(inbox_router)

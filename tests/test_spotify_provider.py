@@ -13,7 +13,7 @@ class FakeSpotify:
         self.states = list(states)
         self.polls = 0
 
-    def current_playback(self):
+    def current_playback(self, **kwargs):
         self.polls += 1
         state = self.states.pop(0) if self.states else None
         if isinstance(state, Exception):
@@ -43,3 +43,25 @@ def test_gives_up_after_consecutive_poll_errors():
     provider = _provider([RuntimeError("down")] * 20)
     result = provider.play_until(song, threading.Event())
     assert result.finished and provider.sp.polls == SpotifyMusicProvider.MAX_POLL_ERRORS
+
+
+def test_episode_search_and_playback_poll():
+    provider = _provider([])
+    calls = []
+
+    def search(q, type, limit, market=None):
+        calls.append((q, type, market))
+        return {"episodes": {"items": [None, {"id": "e1", "name": "Folge 12", "uri": "spotify:episode:e1",
+                                              "duration_ms": 1_800_000, "release_date": "2026-09-20"}]}}
+
+    provider.sp.search = search
+    [episode] = provider.search_episodes("Lage der Nation")
+    assert calls == [("Lage der Nation", "episode", "from_token")]
+    assert (episode.uri, episode.title, episode.duration_seconds) == ("spotify:episode:e1", "Folge 12", 1800)
+    assert provider.supports_episodes
+
+    # The status poll asks for episodes too - otherwise a playing podcast reads as "stopped".
+    seen = []
+    provider.sp.current_playback = lambda **kw: seen.append(kw) or None
+    provider.play_until(episode, threading.Event())
+    assert seen == [{"additional_types": "track,episode"}]

@@ -25,6 +25,23 @@ desks:
     # Plugin tools this desk may call; context_plugins are fetched automatically into its input.
     plugins: [get_weather, get_favorite_songs, get_news_headlines]
     context_plugins: [get_weather]
+  # The dispatch desk ("Leitstelle") runs right away for every listener call: it rates how urgent
+  # it is and routes it - lights directly, "als Nächstes" into the reply lane, wishes to the music
+  # desk, hints to the news mailbox. It also runs outside the broadcast window (anything to be
+  # aired waits for the broadcast start).
+  dispatch:
+    enabled: true
+    # May "sofort" interrupt the music? Off = everything runs "als Nächstes". (Interrupting
+    # comes in a later version; until then "sofort" always runs after the current song.)
+    allow_interrupt: true
+    min_minutes_between_interrupts: 10
+    # A call the desk can't handle (LLM unreachable) is retried this long, then it expires.
+    reply_expires_minutes: 30
+    # valid_until of wishes/news hints when the listener doesn't say.
+    wish_default_valid_hours: 24
+    max_tool_iterations: 6
+    # Plugin tools it may use: direct actions (lights) and lookups (cached for 10 min).
+    plugins: [control_hue_lights, get_weather, get_news_headlines, get_favorite_songs]
 
 schedule:
   # false (default) = always on air. true restricts generation + playback to the daily window

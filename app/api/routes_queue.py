@@ -1,7 +1,7 @@
 """The program queue and the player: what's coming up, remove/undo, skip the current song."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -29,15 +29,11 @@ def queue_view(queue: ProgramQueue, player, include_done: bool = False) -> dict:
     now = datetime.now(timezone.utc)
     player_status = player.status() if player is not None else {"current": None}
     current = player_status.get("current")
-    cursor = now
+    remaining = 0.0
     if current and current.get("duration"):
-        cursor += timedelta(seconds=max(0.0, current["duration"] - current.get("position", 0)))
-
-    items = []
-    for item in queue.active_items():
-        starts = None if item.status == "playing" else cursor
-        items.append(item_view(item, starts))
-        cursor += timedelta(seconds=sum(s.estimated_seconds() for s in item.remaining_segments()))
+        remaining = max(0.0, current["duration"] - current.get("position", 0))
+    starts = queue.start_estimates(remaining, now)
+    items = [item_view(item, starts.get(item.id)) for item in queue.active_items()]
     view = {
         "items": items,
         "now_playing": current,

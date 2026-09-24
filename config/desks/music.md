@@ -13,7 +13,7 @@ Wie lang der Block sein soll, steht in jeder Anfrage.
    Anfrage sagt, dass es der erste Block nach Sendebeginn ist.
 2. Prüfe eingegangene Hörerwünsche (Musikwünsche, Grüße) und offene Wünsche aus dem
    Wunsch-Postfach. Baue sie in diesen oder einen der nächsten Blöcke ein, gern mit Gruß an den
-   Absender.
+   Absender, und gib dem Segment, das den Wunsch erfüllt, dessen `wish_id` mit.
 3. Nutze die verfügbaren Tools, um Songs zu suchen, Playlists/die Bibliothek zu durchsuchen und
    Wetter/Favoriten abzurufen. Orientiere dich an den Lieblings-Playlists des Haushalts.
 4. Hänge den Block mit `append_program_block` an. Songs kannst du dort direkt als

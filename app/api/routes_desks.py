@@ -1,8 +1,8 @@
 """Desks: status, settings, prompt and "run now" (through the scheduler, i.e. lock + cap)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Body, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agent.desk import DESKS, SETTING_BOUNDS, DeskConfig
 from app.config import (
@@ -30,7 +30,7 @@ def _bounded(key: str):
 
 
 class DeskSettingsPatch(BaseModel):
-    """What PATCH /api/desks/{name} accepts; anything else is a 422 instead of a stored value
+    """What PATCH /api/desks/music accepts; anything else is a 422 instead of a stored value
     that breaks every later run."""
 
     model_config = ConfigDict(extra="forbid")
@@ -47,6 +47,23 @@ class DeskSettingsPatch(BaseModel):
     context_plugins: list[str] = None
 
 
+class DispatchSettingsPatch(BaseModel):
+    """What PATCH /api/desks/dispatch accepts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = None
+    allow_interrupt: bool = None
+    min_minutes_between_interrupts: int = _bounded("min_minutes_between_interrupts")
+    reply_expires_minutes: int = _bounded("reply_expires_minutes")
+    wish_default_valid_hours: int = _bounded("wish_default_valid_hours")
+    max_tool_iterations: int = _bounded("max_tool_iterations")
+    plugins: list[str] = None
+
+
+PATCH_MODELS = {"music": DeskSettingsPatch, "dispatch": DispatchSettingsPatch}
+
+
 def _checked(name: str) -> str:
     if name not in DESKS:
         raise HTTPException(status_code=404, detail=f"Unbekannte Redaktion: {name}")
@@ -57,9 +74,11 @@ def _desk_view(request: Request, name: str) -> dict:
     data = request.app.state.scheduler.desk_status(name)
     data["settings"] = DeskConfig.from_config(name, load_config()).settings
     data["prompt_customized"] = is_prompt_customized(name)
+    runner = request.app.state.desk_runner
     if name == "music":
-        reserve = load_reserve(request.app.state.desk_runner.reserve_path)
+        reserve = load_reserve(runner.reserve_path)
         data["reserve"] = {"updated_at": reserve["updated_at"], "count": len(reserve["tracks"])}
+        data["open_wishes"] = len(runner.wishes.open())
     return data
 
 
@@ -74,8 +93,12 @@ def get_desk(name: str, request: Request) -> dict:
 
 
 @router.patch("/{name}")
-def patch_desk(name: str, partial: DeskSettingsPatch, request: Request) -> dict:
-    """Deep-merges `partial` into desks.<name> of the user config."""
+def patch_desk(name: str, request: Request, body: dict = Body(...)) -> dict:
+    """Deep-merges the validated fields into desks.<name> of the user config."""
+    try:
+        partial = PATCH_MODELS[_checked(name)].model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False, include_context=False)) from exc
     values = partial.model_dump(exclude_unset=True)
     merged = {**DeskConfig.from_config(_checked(name), load_config()).settings, **values}
     if merged.get("fill_threshold_minutes", 0) >= merged.get("max_queued_program_minutes", float("inf")):

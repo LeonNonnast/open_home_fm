@@ -30,8 +30,7 @@ def test_scripted_run_filters_recently_played(config_env: Path, fake_tts, monkey
     ])
     runner = _runner(config_env, monkeypatch, provider, llm, fake_tts)
     record_played(runner.play_history_path, "u:alt", "Alt - A")
-    (config_env / "data" / "inbox").mkdir()
-    (config_env / "data" / "inbox" / "20260924T070000.txt").write_text("Bitte was Neues", encoding="utf-8")
+    runner.wishes.add("Bitte was Neues", author="Mama")
 
     result = runner.run("music", trigger="fill")
 
@@ -46,7 +45,6 @@ def test_scripted_run_filters_recently_played(config_env: Path, fake_tts, monkey
     assert "erste Block nach Sendebeginn" in user.content
     tool_results = [m.content for m in llm.requests[-1] if m.role == "tool"]
     assert "Entfernt, weil kürzlich gespielt" in tool_results[-1]
-    assert not list((config_env / "data" / "inbox").glob("*.txt"))
     [transcript] = (config_env / "data" / "transcripts").glob("*_music_*.json")
 
 
@@ -67,8 +65,7 @@ def test_followup_block_continues_instead_of_greeting(config_env: Path, fake_tts
 
 def test_run_without_block_counts_as_error(config_env: Path, fake_tts, monkeypatch):
     runner = _runner(config_env, monkeypatch, FakeMusicProvider([]), ScriptedLLM(["Keine Lust."]), fake_tts)
-    (config_env / "data" / "inbox").mkdir()
-    (config_env / "data" / "inbox" / "w.txt").write_text("Wunsch", encoding="utf-8")
+    wish = runner.wishes.add("Wunsch")
     result = runner.run("music")
     assert result["error"] and "keinen Programmblock" in result["error"]
-    assert list((config_env / "data" / "inbox").glob("*.txt"))  # kept for the next try
+    assert runner.wishes.get(wish["id"])["status"] == "noted"  # kept for the next try

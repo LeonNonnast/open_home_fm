@@ -8,7 +8,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.agent.desk as desk_module
-import app.api.routes_inbox as routes_inbox
 import app.api.routes_music as routes_music
 import app.api.routes_transcripts as routes_transcripts
 import app.main as main
@@ -46,7 +45,6 @@ def client(config_env: Path, fake_tts, monkeypatch):
     monkeypatch.setattr(desk_module, "create_tts_engine", lambda config, cache_dir: fake_tts)
     monkeypatch.setattr(desk_module, "create_llm_provider", lambda config: llm)
     monkeypatch.setattr(routes_transcripts, "TRANSCRIPTS_DIR", config_env / "data" / "transcripts")
-    monkeypatch.setattr(routes_inbox, "INBOX_DIR", config_env / "data" / "inbox")
     with TestClient(main.app) as c:
         c.player_provider = player_provider
         yield c

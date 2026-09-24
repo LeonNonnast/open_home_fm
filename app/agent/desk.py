@@ -1,7 +1,9 @@
 """Desks: one agent configuration each (prompt + tools + trigger), run by the same DeskRunner.
 
-Phase 1 has the music desk: it appends program blocks to the queue whenever the program runs
-low (see app/scheduler.py) and keeps the reserve for the filler program fresh.
+- music: appends program blocks to the queue whenever the program runs low (see
+  app/scheduler.py) and keeps the reserve for the filler program fresh.
+- dispatch ("Leitstelle"): runs right away for every listener call and routes it (lights,
+  "als Nächstes", wish mailbox, news mailbox) - see app/agent/dispatch.py.
 
 Every run re-reads the config and the desk prompt and re-scans ./plugins, so edits through the
 web UI take effect on the very next run without a restart.
@@ -14,10 +16,8 @@ is serialized (app.audio.tts.RENDER_LOCK).
 """
 from __future__ import annotations
 
-import json
 import logging
 import random
-import shutil
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -25,20 +25,31 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.agent.builtin_tools import build_builtin_tools, songs_since_last_announcement
+from app.agent.dispatch import DispatchSession, InfoCache, call_line
 from app.agent.llm import LLMMessage, create_llm_provider
 from app.agent.play_history import recently_played
 from app.agent.plugin_loader import discover_plugins
 from app.agent.tools import ToolRegistry
 from app.agent.transcript import load_recent_transcripts, render_history_context, save_transcript
 from app.audio.tts import create_tts_engine
-from app.config import default_prompt_path, load_config, load_system_prompt, resolve_path, user_prompt_path
+from app.config import (
+    default_prompt_path,
+    is_broadcast_time,
+    load_config,
+    load_system_prompt,
+    next_broadcast_start,
+    resolve_path,
+    user_prompt_path,
+)
 from app.music import create_music_provider
+from app.program.calls import CallStore, hhmm
+from app.program.mailboxes import news_mailbox, wish_mailbox
 from app.program.queue import ProgramQueue, QueueItem
 
 logger = logging.getLogger(__name__)
 
-DESKS = ("music",)
-DESK_LABELS = {"music": "Musikredaktion"}
+DESKS = ("music", "dispatch")
+DESK_LABELS = {"music": "Musikredaktion", "dispatch": "Leitstelle"}
 
 # Fallbacks for keys missing from desks.<name> (the real defaults live in config/config.yaml).
 DESK_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -54,8 +65,19 @@ DESK_DEFAULTS: dict[str, dict[str, Any]] = {
         "plugins": ["get_weather", "get_favorite_songs", "get_news_headlines"],
         "context_plugins": ["get_weather"],
     },
+    "dispatch": {
+        "enabled": True,
+        "allow_interrupt": True,
+        "min_minutes_between_interrupts": 10,
+        "reply_expires_minutes": 30,
+        "wish_default_valid_hours": 24,
+        "max_tool_iterations": 6,
+        "plugins": ["control_hue_lights", "get_weather", "get_news_headlines", "get_favorite_songs"],
+    },
 }
-BACKOFF_SECONDS = {"music": (60, 120, 300, 600)}
+BACKOFF_SECONDS = {"music": (60, 120, 300, 600), "dispatch": (10, 30, 60)}
+# Earlier calls (with their results) the dispatch desk sees as context.
+DISPATCH_RECENT_CALLS = 5
 # (min, max) of the numeric desk settings - the API rejects values outside, from_config falls
 # back to the default for a bad value already on disk (hand edit, older version).
 SETTING_BOUNDS: dict[str, tuple[int, int]] = {
@@ -66,6 +88,9 @@ SETTING_BOUNDS: dict[str, tuple[int, int]] = {
     "no_repeat_minutes": (0, 10080),
     "max_tool_iterations": (1, 200),
     "history_runs": (0, 50),
+    "min_minutes_between_interrupts": (0, 240),
+    "reply_expires_minutes": (1, 1440),
+    "wish_default_valid_hours": (1, 336),
 }
 
 
@@ -176,13 +201,14 @@ class DeskRunner:
         self.root_dir = root_dir
         self.queue = queue
         self.player = player  # QueuePlayer, for "what's on air" and the fill level; optional
-        self.inbox_dir = root_dir / "data" / "inbox"
-        self.processed_dir = root_dir / "data" / "processed"
         self.play_history_path = root_dir / "data" / "playlists" / "play_history.json"
         self.reserve_path = root_dir / "data" / "reserve.json"
-        self.wishes_path = root_dir / "data" / "music_wishes.json"
         self.transcripts_dir = root_dir / "data" / "transcripts"
         self.plugins_dir = root_dir / "plugins"
+        self.wishes = wish_mailbox(root_dir / "data")
+        self.news_notes = news_mailbox(root_dir / "data")
+        self.calls = CallStore(root_dir / "data" / "calls", queue, self.wishes, self.news_notes, self.start_estimates)
+        self.info_cache = InfoCache()
         self._lock = threading.Lock()
         self._slots = {name: _Slot() for name in DESKS}
 
@@ -296,12 +322,19 @@ class DeskRunner:
         """One synchronous run of desk `name` (no locking - use request() for that)."""
         if name == "music":
             return self._run_music(trigger)
+        if name == "dispatch":
+            return self._run_dispatch(trigger)
         raise ValueError(f"Unknown desk: {name}")
 
     def remaining_program_seconds(self) -> float:
         if self.player is not None:
             return self.player.remaining_program_seconds()
         return self.queue.remaining_program_seconds()
+
+    def start_estimates(self) -> dict[str, datetime]:
+        if self.player is not None:
+            return self.player.start_estimates()
+        return self.queue.start_estimates()
 
     def _run_music(self, trigger: str) -> dict:
         config = load_config()
@@ -327,12 +360,13 @@ class DeskRunner:
             reserve_path=self.reserve_path,
             desk="music",
             appended=appended,
+            wishes=self.wishes,
         ):
             registry.register(tool)
         self._register_plugins(registry, desk, config)
 
-        inbox_items = self._collect_inbox()
-        user_content = self._music_user_message(config, desk, trigger, provider, inbox_items, recent_tracks)
+        open_wishes = self.wishes.open()
+        user_content = self._music_user_message(config, desk, trigger, provider, open_wishes, recent_tracks)
 
         # Saved as part of this run's transcript: static system prompt, auto-fetched plugin
         # context, the actual input, and the full tool-calling exchange.
@@ -360,13 +394,11 @@ class DeskRunner:
             "items": [i.id for i in appended],
             "segments": [asdict(seg) for item in appended for seg in item.segments],
         }
-        wishes = "\n".join(text for _path, text in inbox_items if text)
+        wishes = "\n".join(w["text"] for w in open_wishes)
         transcript = save_transcript(
             self.transcripts_dir, messages, final_text, script, error=error,
             desk="music", trigger=trigger, inputs=wishes,
         )
-        if error is None:
-            self._archive_inbox(inbox_items)
         return {
             "desk": "music",
             "trigger": trigger,
@@ -429,7 +461,7 @@ class DeskRunner:
         desk: DeskConfig,
         trigger: str,
         provider,
-        inbox_items: list[tuple[Path, str]],
+        open_wishes: list[dict],
         recent_tracks: list[dict],
     ) -> str:
         s = desk.settings
@@ -479,17 +511,19 @@ class DeskRunner:
         if favorites:
             parts.append("Lieblings-Playlists des Haushalts (Geschmack treffen):\n" + favorites)
 
-        wishes = self._open_wishes()
-        if wishes:
+        if open_wishes:
+            lines = []
+            for wish in open_wishes:
+                author = f" (von {wish['author']})" if wish.get("author") else ""
+                until = f", gültig bis {hhmm(wish['valid_until'], '%d.%m. %H:%M')}" if wish.get("valid_until") else ""
+                lines.append(f"- {wish.get('text', '')}{author} [wish_id={wish['id']}{until}]")
             parts.append(
-                "Offene Musikwünsche (in einem der nächsten Blöcke einbauen, gern mit Gruß an den Absender; "
-                "Segment mit wish_id markieren; auch in der Reserve berücksichtigen):\n" + wishes
+                "Offene Musikwünsche aus dem Wunsch-Postfach (in diesem oder einem der nächsten Blöcke einbauen, "
+                "gern mit Gruß an den Absender; das erfüllende Segment mit wish_id markieren; auch in der Reserve "
+                "berücksichtigen):\n" + "\n".join(lines)
             )
-        if inbox_items:
-            texts = "\n".join(f"{i + 1}. {text}" for i, (_path, text) in enumerate(inbox_items) if text)
-            parts.append("Neue Hörerwünsche:\n" + texts)
         else:
-            parts.append("Es liegen keine neuen Hörerwünsche vor.")
+            parts.append("Es liegen keine offenen Musikwünsche vor.")
 
         parts.append(
             "Aktualisiere außerdem mit update_reserve die Reserve (15-20 Songs für den Notfall, ohne "
@@ -527,50 +561,163 @@ class DeskRunner:
             blocks.append(f"- {names.get(playlist_id, playlist_id)} (id={playlist_id}): {titles or 'leer'}")
         return "\n".join(blocks)
 
-    def _open_wishes(self) -> str:
-        """Open wishes from the wish inbox (filled by the dispatch desk from Phase 2 on)."""
-        if not self.wishes_path.exists():
-            return ""
+    # ---------- dispatch desk ----------
+
+    def _run_dispatch(self, trigger: str) -> dict:
+        """Works through the pending calls, oldest first, one LLM conversation per call (so every
+        action is attributable). Calls arriving meanwhile are picked up by the same loop. Stops at
+        the first LLM failure: that call is `retrying`, the desk backs off, the rest waits."""
+        config = load_config()
+        desk = DeskConfig.from_config("dispatch", config)
+        self.calls.expire_stale(int(desk.settings["reply_expires_minutes"]))
+        tools: dict[str, Any] = {}
+        handled: list[str] = []
+        error = None
+        while (call := self.calls.claim_next()) is not None:
+            handled.append(call["id"])
+            error = self._dispatch_call(call, config, desk, trigger, tools)
+            if error is not None:
+                break
+        self.calls.sync()
+        if not handled:
+            final = "Keine offenen Zwischenrufe."
+        else:
+            final = f"{len(handled)} Zwischenruf(e) bearbeitet" + (" – Leitstelle nicht erreichbar" if error else ".")
+        return {"desk": "dispatch", "trigger": trigger, "final_message": final, "error": error, "calls": handled}
+
+    def _dispatch_tools(self, config: dict, tools: dict[str, Any]) -> dict[str, Any]:
+        """Music source, TTS and LLM, created once per run (lazily: a run without calls needs none)."""
+        if not tools:
+            try:
+                tools["provider"] = create_music_provider(config)
+            except Exception as exc:
+                logger.warning("Dispatch: music source unavailable: %s", exc)
+                tools["provider"], tools["provider_error"] = None, str(exc)
+            try:
+                tools["tts"] = create_tts_engine(config, resolve_path(config["audio"]["jingle_cache_dir"]))
+            except Exception as exc:
+                logger.warning("Dispatch: TTS unavailable: %s", exc)
+                tools["tts"] = None
+        if tools.get("llm") is None:
+            tools["llm"] = create_llm_provider(config)
+        return tools
+
+    def _dispatch_call(self, call: dict, config: dict, desk: DeskConfig, trigger: str, tools: dict) -> str | None:
+        """One call through the dispatch desk; returns an error (LLM unreachable) or None."""
+        on_air = is_broadcast_time(config)
+        next_start = next_broadcast_start(config)
+        next_start = next_start.astimezone(timezone.utc) if next_start else None
         try:
-            data = json.loads(self.wishes_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            logger.warning("Could not read %s", self.wishes_path, exc_info=True)
-            return ""
-        wishes = data.get("wishes", []) if isinstance(data, dict) else data
-        now = _utcnow()
-        lines = []
-        for wish in wishes if isinstance(wishes, list) else []:
-            if not isinstance(wish, dict) or wish.get("status") not in (None, "open", "noted"):
-                continue
-            valid_until = wish.get("valid_until")
-            try:
-                if valid_until and datetime.fromisoformat(valid_until).astimezone(timezone.utc) < now:
-                    continue  # expired wishes are dropped silently
-            except ValueError:
-                pass
-            author = f" (von {wish['author']})" if wish.get("author") else ""
-            until = f", gültig bis {valid_until}" if valid_until else ""
-            lines.append(f"- {wish.get('text', '')}{author} [wish_id={wish.get('id', '?')}{until}]")
-        return "\n".join(lines)
+            tools = self._dispatch_tools(config, tools)
+        except Exception as exc:
+            return self._dispatch_failed(call, [], None, str(exc), trigger)
+        session = DispatchSession(
+            call, desk.settings, self.queue, self.wishes, self.news_notes, tools["provider"], tools["tts"],
+            self.start_estimates, on_air=on_air, next_on_air=next_start, provider_error=tools.get("provider_error"),
+        )
+        registry = ToolRegistry()
+        for tool in session.tools():
+            registry.register(tool)
+        disabled = config.get("plugins", {}).get("disabled")
+        for tool in discover_plugins(self.plugins_dir, disabled):
+            if tool.name in desk.tools:
+                registry.register(session.wrap_plugin(tool) if tool.action else self.info_cache.wrap(tool))
 
-    # ---------- legacy inbox (until the calls of Phase 2) ----------
+        messages = [
+            LLMMessage(role="system", content=load_system_prompt("dispatch")),
+            LLMMessage(role="user", content=self._dispatch_user_message(call, on_air, next_start)),
+        ]
+        final_text, error = self._llm_loop(tools["llm"], messages, None, registry, desk.max_tool_iterations)
+        if error is not None:
+            return self._dispatch_failed(call, messages, session.done, error, trigger)
 
-    def _collect_inbox(self) -> list[tuple[Path, str]]:
-        if not self.inbox_dir.exists():
-            return []
-        items = []
-        for path in sorted(self.inbox_dir.glob("*.txt")):
-            try:
-                items.append((path, path.read_text(encoding="utf-8").strip()))
-            except OSError:
-                logger.exception("Could not read inbox file %s", path)
-        return items
+        current = self.calls.get(call["id"])
+        if current is None or current["status"] != "processing":
+            # Withdrawn meanwhile: direct actions already happened, nothing else is planned.
+            logger.info("Call %s was withdrawn during dispatch, not committing", call["id"])
+            if current is not None:
+                self.calls.update(call["id"], lambda c: c.update(actions=session.done))
+            return None
+        committed = session.commit()
 
-    def _archive_inbox(self, inbox_items: list[tuple[Path, str]]) -> None:
-        self.processed_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        for path, _text in inbox_items:
-            try:
-                shutil.move(str(path), str(self.processed_dir / f"{stamp}_{path.name}"))
-            except OSError:
-                logger.exception("Could not archive inbox file %s", path)
+        def done(c: dict) -> None:
+            c.update(
+                status="queued" if committed.item else "routed",
+                actions=committed.actions,
+                reply_text=committed.reply_text,
+                reply_audio=committed.reply_audio,
+                final_message=final_text or None,
+                eta=committed.eta,
+                error=None,
+                attempts=c.get("attempts", 0) + 1,
+                dispatched=True,
+            )
+        self.calls.update(call["id"], done)
+        self.calls.sync([call["id"]])
+        save_transcript(
+            self.transcripts_dir, messages, final_text,
+            {"items": [committed.item.id] if committed.item else [],
+             "segments": [asdict(seg) for seg in committed.item.segments] if committed.item else []},
+            desk="dispatch", trigger=trigger, inputs=f"{call.get('author') or 'jemand'}: {call['text']}",
+        )
+        logger.info("Call %s dispatched: %s", call["id"], "; ".join(a["summary"] for a in committed.actions) or "keine Aktion")
+        return None
+
+    def _dispatch_failed(self, call: dict, messages: list, done: list | None, error: str, trigger: str) -> str:
+        """`done`: the direct actions executed so far (None = unchanged)."""
+        def retry(c: dict) -> None:
+            # Direct actions that already ran are kept (and not repeated on the next attempt).
+            c.update(status="retrying" if c["status"] == "processing" else c["status"], error=error,
+                     attempts=c.get("attempts", 0) + 1)
+            if done is not None:
+                c["actions"] = done
+        self.calls.update(call["id"], retry)
+        if messages:
+            save_transcript(self.transcripts_dir, messages, "", None, error=error, desk="dispatch", trigger=trigger,
+                            inputs=f"{call.get('author') or 'jemand'}: {call['text']}")
+        logger.warning("Call %s: dispatch failed, will retry: %s", call["id"], error)
+        return error
+
+    def _dispatch_user_message(self, call: dict, on_air: bool, next_start: datetime | None) -> str:
+        parts = [f"Aktuelle Zeit: {now_description()}."]
+        if on_air:
+            parts.append("Der Sender ist auf Sendung.")
+        else:
+            start = f" bis {hhmm(next_start)}" if next_start else ""
+            parts.append(
+                f"Sendepause{start}: Ansagen und Songs laufen erst zum Sendebeginn; direkte Aktionen (z.B. Licht), "
+                "Musikwünsche und Hinweise für die Nachrichten werden trotzdem sofort erledigt."
+            )
+        now_playing = self._now_playing_line()
+        if now_playing:
+            parts.append(f"Läuft gerade: {now_playing}")
+        upcoming = []
+        for item in self.queue.active_items():
+            if item.status == "playing":
+                segments = item.remaining_segments()
+            else:
+                segments = item.segments
+            upcoming.extend(f"- [{'Ansage' if s.type == 'jingle' else 'Song'}] {s.text or s.title}" for s in segments)
+            if len(upcoming) >= 3:
+                break
+        if upcoming:
+            parts.append("Als Nächstes geplant:\n" + "\n".join(upcoming[:3]))
+        parts.append(
+            "Hinweis: Unterbrechen ist in dieser Version noch nicht möglich - alles mit Dringlichkeit „sofort“ "
+            "läuft direkt nach dem aktuellen Song."
+        )
+        recent = [c for c in self.calls.all() if c["id"] != call["id"] and c.get("dispatched")][:DISPATCH_RECENT_CALLS]
+        if recent:
+            parts.append(
+                "Letzte Zwischenrufe mit ihrem Ergebnis, neueste zuerst (nur zur Orientierung, nicht erneut "
+                "erledigen):\n" + "\n".join(call_line(c) for c in recent)
+            )
+        done = [a for a in call.get("actions") or [] if a.get("type") == "plugin"]
+        if done:
+            parts.append(
+                "Bei diesem Zwischenruf bereits erledigt (nicht wiederholen):\n"
+                + "\n".join(f"- {a['summary']}" for a in done)
+            )
+        who = call.get("author") or "ein Hörer (Name unbekannt)"
+        parts.append(f"Neuer Zwischenruf von {who} ({hhmm(call.get('created_at'))} Uhr):\n„{call['text']}“")
+        return "\n\n".join(parts)

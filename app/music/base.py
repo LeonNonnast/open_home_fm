@@ -46,6 +46,12 @@ class PlaybackResult:
 
 class MusicProvider(ABC):
     name: str = "base"
+    # Podcast episodes (Spotify type=episode) - played by the player like a track.
+    supports_episodes: bool = False
+
+    def search_episodes(self, query: str, limit: int = 5) -> list[Track]:
+        """Podcast episodes as Tracks (title = episode, artist = show). Empty where unsupported."""
+        return []
 
     @abstractmethod
     def search_tracks(self, query: str, limit: int = 10) -> list[Track]:

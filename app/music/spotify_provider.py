@@ -53,6 +53,7 @@ def create_spotify_oauth(
 
 class SpotifyMusicProvider(MusicProvider):
     name = "spotify"
+    supports_episodes = True
 
     def __init__(
         self,
@@ -99,6 +100,12 @@ class SpotifyMusicProvider(MusicProvider):
         items = result.get("tracks", {}).get("items", [])
         return [self._to_track(item) for item in items]
 
+    def search_episodes(self, query: str, limit: int = 5) -> list[Track]:
+        # Without a market Spotify answers episode searches with null items.
+        result = self.sp.search(q=query, type="episode", limit=limit, market="from_token")
+        items = (result.get("episodes") or {}).get("items") or []
+        return [self._episode_to_track(item) for item in items if item]
+
     def list_playlists(self) -> list[Playlist]:
         result = self.sp.current_user_playlists(limit=50)
         return [
@@ -116,6 +123,12 @@ class SpotifyMusicProvider(MusicProvider):
         return tracks
 
     def get_track_by_uri(self, uri: str) -> Track | None:
+        if uri.startswith("spotify:episode:"):
+            try:
+                return self._episode_to_track(self.sp.episode(uri, market="from_token"))
+            except Exception:
+                logger.warning("Could not resolve Spotify episode uri '%s'", uri, exc_info=True)
+                return None
         try:
             item = self.sp.track(uri)
         except Exception:
@@ -176,7 +189,8 @@ class SpotifyMusicProvider(MusicProvider):
                     logger.warning("Could not pause Spotify playback", exc_info=True)
                 return PlaybackResult(finished=False, position_seconds=time.monotonic() - started)
             try:
-                state = self.sp.current_playback()
+                # additional_types: without "episode" a playing podcast shows up as item=None.
+                state = self.sp.current_playback(additional_types="track,episode")
             except Exception as exc:
                 poll_errors += 1
                 if poll_errors >= self.MAX_POLL_ERRORS:
@@ -198,6 +212,18 @@ class SpotifyMusicProvider(MusicProvider):
         target = self._resolve_device(device)
         if target:
             self.sp.pause_playback(device_id=target.id)
+
+    @staticmethod
+    def _episode_to_track(item: dict) -> Track:
+        show = (item.get("show") or {}).get("name") or ""
+        return Track(
+            id=item["id"],
+            title=item["name"],
+            artist=show,
+            uri=item["uri"],
+            duration_seconds=item.get("duration_ms", 0) / 1000 if item.get("duration_ms") else None,
+            album=item.get("release_date"),
+        )
 
     @staticmethod
     def _to_track(item: dict) -> Track:

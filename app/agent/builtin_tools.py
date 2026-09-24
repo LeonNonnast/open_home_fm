@@ -16,6 +16,7 @@ from app.agent.tools import Tool
 from app.audio.tts import PiperTTSEngine, TTSEngine
 from app.music.base import MusicProvider, Track
 from app.program.filler import save_reserve, track_segment
+from app.program.mailboxes import Mailbox
 from app.program.queue import ProgramQueue, QueueItem, Segment
 
 logger = logging.getLogger(__name__)
@@ -65,8 +66,10 @@ def build_builtin_tools(
     reserve_path: Path | None = None,
     desk: str = "music",
     appended: list[QueueItem] | None = None,
+    wishes: Mailbox | None = None,
 ) -> list[Tool]:
-    """`appended` collects the items this run added to the queue (for the transcript)."""
+    """`appended` collects the items this run added to the queue (for the transcript). A segment's
+    `wish_id` marks that wish in `wishes` as used once its block is queued."""
     remaining = remaining_program_seconds or queue.remaining_program_seconds
     appended = appended if appended is not None else []
     # Matched by uri and by title: the same song often exists under several uris (single, album,
@@ -245,8 +248,20 @@ def build_builtin_tools(
         if not any(s.type == "track" for s in resolved):
             return "Kein Block angehängt: kein Song übrig. " + " ".join(notes)
 
+        open_wishes = {w["id"] for w in wishes.open()} if wishes is not None else set()
+        unknown = sorted({str(seg.wish_id) for seg in resolved if seg.wish_id and seg.wish_id not in open_wishes})
+        for seg in resolved:
+            if seg.wish_id and seg.wish_id not in open_wishes:
+                seg.wish_id = None
+        if unknown:
+            notes.append("Unbekannte oder schon erfüllte wish_id ignoriert: " + ", ".join(unknown) + ".")
+
         item = queue.append(QueueItem.new("program", desk, resolved))
         appended.append(item)
+        if wishes is not None:
+            used = wishes.mark_used(list({seg.wish_id for seg in resolved if seg.wish_id}), item.id)
+            if used:
+                notes.append(f"Wunsch erfüllt: {', '.join(used)}.")
         run_seconds[0] += total
         result = (
             f"Block {item.id} mit {len(resolved)} Segmenten (ca. {round(total / 60)} Minuten) angehängt. "

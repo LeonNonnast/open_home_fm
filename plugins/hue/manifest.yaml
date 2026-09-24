@@ -23,3 +23,5 @@ parameters:
         blau, lila, pink oder ein Hex-Wert wie "#ff8800"
   required: [action]
 enabled: true
+# A direct action: the dispatch desk shows it in the call ("Licht: eingeschaltet").
+action: true

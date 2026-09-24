@@ -5,17 +5,19 @@ Lokaler, plugin-basierter Radio-Agent für einen von einem Raspberry Pi gehostet
 Eine KI-Musikredaktion plant das Programm in Blöcken aus Songs und kurzen gesprochenen
 Einspielern und hängt sie an eine fortlaufende Warteschlange an - immer dann, wenn das
 eingeplante Programm knapp wird. Ein davon unabhängiger, deterministischer Player spielt die
-Warteschlange durchgehend ab; fällt das LLM aus, läuft Füllprogramm weiter.
+Warteschlange durchgehend ab; fällt das LLM aus, läuft Füllprogramm weiter. Hörer schicken
+jederzeit einen **Zwischenruf** (Text oder Sprache), den die **Leitstelle** sofort einsortiert.
 
 ## Architektur
 
 ```
 Web-UI (web/)  ──┐
                  ├─> FastAPI (app/main.py) ─┬─> DeskScheduler (app/scheduler.py)
-Inbox (Text/STT) ┘                          │     Füllstand-Watcher 30 s, Heartbeat 60 min, Sendebeginn
+Zwischenrufe     ┘                          │     Füllstand-Watcher 30 s, Heartbeat 60 min, Sendebeginn,
+(/api/calls, Text/STT)                       │     Leitstelle sofort je Zwischenruf (+ Watcher 10 s)
                                              │      │
                                              │      v
-                                             │   DeskRunner (app/agent/desk.py): Musikredaktion
+                                             │   DeskRunner (app/agent/desk.py): Musikredaktion, Leitstelle
                                              │     LLM (Ollama/Anthropic) + Tools (Musik, TTS, Plugins)
                                              │      │ append_program_block / update_reserve
                                              │      v
@@ -36,7 +38,22 @@ Inbox (Text/STT) ┘                          │     Füllstand-Watcher 30 s, H
 - **Wiedergabe** (deterministisch): `QueuePlayer` läuft als eigener Hintergrund-Thread und wählt
   vor jedem Segment neu (Spuren `urgent` > `reply` > `news` > `program` > `filler`). Nach einem
   Neustart geht es mit dem nächsten Segment weiter. Songs zählen erst nach 30 s als gespielt.
-  Brechen 3 Segmente in Folge nach < 10 s ab (z.B. Spotify-Gerät weg), pausiert der Player 60 s.
+  Brechen 3 Segmente in Folge nach < 10 s ab (z.B. Spotify-Gerät weg), pausiert der Player 60 s
+  (dann 5, 15 min). Jedes Segment bekommt höchstens 2 Versuche, danach wird es ausgelassen.
+- **Zwischenrufe & Leitstelle**: jeder Zwischenruf (`data/calls/<id>.json`, `POST /api/calls/text`
+  bzw. `/voice` - Sprache wird im Hintergrund transkribiert und vor dem Absenden bestätigt)
+  startet sofort die Leitstelle (`desks.dispatch`, Prompt `config/desks/dispatch.md`). Sie schätzt
+  die Dringlichkeit ein und leitet weiter: direkte Plugin-Aktionen (Licht) sofort, „als
+  Nächstes“ (`play_next`, `reply`) als **ein** Beitrag der Spur `reply` nach dem laufenden Song
+  (Ansage vor dem Song), „demnächst“ ins Wunsch-Postfach `data/music_wishes.json` (die
+  Musikredaktion baut den Wunsch ein und markiert ihn per `wish_id`), „Nachrichten“ ins
+  Meldungs-Postfach `data/news_notes.json`. „Sofort“ (`play_now`, `breaking`) läuft bis zur
+  Unterbrechen-Funktion ebenfalls als Nächstes. Jede Aktion steht im Zwischenruf und lässt sich
+  (außer direkten Aktionen) rückgängig machen. Ist das LLM nicht erreichbar, bleibt der
+  Zwischenruf offen und wird mit Backoff (10 s, 30 s, 1 min) erneut versucht, nach
+  `reply_expires_minutes` (30) verfällt er („Nochmal senden“). In der Sendepause laufen direkte
+  Aktionen trotzdem, Ansagen/Songs warten auf den Sendebeginn. Alte `data/inbox/*.txt` werden
+  beim Start übernommen; `/api/inbox/*` bleibt für eine Version als Alias.
 - **Füllprogramm**: Ist kein Programm da, spielt der Player die **Reserve** (`data/reserve.json`,
   15-20 Songs, bei jedem Lauf von der Musikredaktion gepflegt), danach zufällige Songs aus den
   **Lieblings-Playlists** (`music.favorite_playlists`, Playlist-IDs bzw. Ordnernamen der

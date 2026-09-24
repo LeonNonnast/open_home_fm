@@ -35,6 +35,8 @@ TRACK_ESTIMATE_SECONDS = 210
 JINGLE_ESTIMATE_SECONDS = 20
 # Program blocks carry time references ("gleich halb acht") - never play them hours later.
 PROGRAM_TTL = timedelta(hours=2)
+# Replies to a call ("als Nächstes") are stale after this long.
+REPLY_TTL = timedelta(minutes=30)
 # Items in a final state are dropped from queue.json after this long.
 CLEANUP_AFTER = timedelta(hours=24)
 
@@ -114,6 +116,8 @@ class QueueItem:
         now = now or _now()
         if ttl is None and lane == "program":
             ttl = PROGRAM_TTL
+        elif ttl is None and lane == "reply":
+            ttl = REPLY_TTL
         return cls(
             id=uuid.uuid4().hex[:12],
             lane=lane,
@@ -346,6 +350,21 @@ class ProgramQueue:
         items = [i for i in self.items() if i.status in ACTIVE_STATUSES]
         items.sort(key=lambda i: (LANE_PRIORITY.get(i.lane, len(LANES)), i.status != "playing", i.created_at))
         return items
+
+    def start_estimates(self, current_remaining: float = 0.0, now: datetime | None = None) -> dict[str, datetime]:
+        """Estimated start of every queued item in play order, after the rest of the segment on
+        air (`current_remaining`, from the player). A playing item has no estimate; an item held
+        until `not_before` (e.g. the broadcast start) starts no earlier than that."""
+        now = now or _now()
+        cursor = now + timedelta(seconds=max(0.0, current_remaining))
+        starts: dict[str, datetime] = {}
+        for item in self.active_items():
+            not_before = _parse(item.not_before)
+            if item.status != "playing":
+                starts[item.id] = max(cursor, not_before) if not_before else cursor
+            if not_before is None or not_before <= cursor:
+                cursor += timedelta(seconds=sum(s.estimated_seconds() for s in item.remaining_segments()))
+        return starts
 
     def remaining_program_seconds(self, current_remaining: float = 0.0, now: datetime | None = None) -> float:
         """How long the `program` lane still runs: queued segments + the rest of the current one.

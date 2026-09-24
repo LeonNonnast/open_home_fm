@@ -13,6 +13,8 @@ Plugin contract (kept intentionally minimal so a plugin author only needs two sm
         enabled: true               # optional, defaults to true
         context: false               # optional, defaults to false - see below
         context_args: {}             # optional, arguments used when context: true
+        action: false                # optional: true = changes something (lights) instead of
+                                     # looking something up - see below
 
     plugins/<name>/plugin.py
         def execute(**kwargs) -> str:
@@ -28,6 +30,10 @@ into the input, so the information is available without a tool call. It remains 
 normal tool too (e.g. to ask about a different city than the default). Which plugins a desk
 uses - and which of them as context - is decided per desk (`desks.<name>.plugins` /
 `context_plugins`, see app/agent/desk.py); the manifest flag is informational for the web UI.
+
+`action: true` marks a direct action (e.g. switching lights): the dispatch desk shows each call
+of it as an action of the listener's call and never caches its result. Plugins without it are
+lookups (weather, news); the dispatch desk caches their results for 10 minutes.
 
 Optionally `plugin.py` also defines `install(setup) -> dict`, an interactive setup step the
 installer runs (see app/agent/plugin_setup.py) - the loader itself ignores it.
@@ -92,6 +98,7 @@ def discover_plugins(plugins_dir: Path, disabled: list[str] | None = None) -> li
                     source="plugin",
                     context=manifest.get("context", False),
                     context_args=manifest.get("context_args", {}) or {},
+                    action=bool(manifest.get("action", False)),
                 )
             )
             logger.info("Loaded plugin tool '%s' from %s", name, plugin_dir.name)

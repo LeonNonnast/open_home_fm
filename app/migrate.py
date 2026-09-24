@@ -7,14 +7,17 @@ tracked file is restored - so `git pull` works again. Runs from `install.sh` (up
 setup) and at app startup, for installations updated with a plain `git pull`.
 
 `migrate_agent_settings()` (run once at app start) moves the pre-desk `agent.*` settings to
-`desks.music.*` and removes the runtime files the queue replaced.
+`desks.music.*` and removes the runtime files the queue replaced. `migrate_inbox()` turns
+unprocessed wishes from `data/inbox/*.txt` into calls for the dispatch desk.
 
 Run standalone with: .venv/bin/python -m app.migrate
 """
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -140,6 +143,41 @@ def migrate_agent_settings(root: Path | None = None) -> list[str]:
         legacy_script.unlink()
         changes.append(f"{LEGACY_SCRIPT} gelöscht")
     return changes
+
+
+LEGACY_INBOX = "data/inbox"
+LEGACY_PROCESSED = "data/processed"
+
+
+def migrate_inbox(calls, root: Path | None = None) -> int:
+    """Unprocessed wishes (`data/inbox/*.txt`) become calls with status `new` - the dispatch desk
+    works them off. The files (and their recordings) move to data/processed. Idempotent."""
+    root = root or cfg.ROOT_DIR
+    inbox = root / LEGACY_INBOX
+    if not inbox.exists():
+        return 0
+    processed = root / LEGACY_PROCESSED
+    count = 0
+    for path in sorted(inbox.glob("*.txt")):
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            logger.warning("Could not read inbox file %s", path, exc_info=True)
+            continue
+        try:
+            created = datetime.strptime(path.stem[:15], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            created = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        recordings = [p for p in inbox.glob(f"{path.stem}.*") if p.suffix != ".txt"]
+        if text:
+            calls.create(text, source="voice" if recordings else "text", created_at=created)
+            count += 1
+        processed.mkdir(parents=True, exist_ok=True)
+        for moved in (path, *recordings):
+            shutil.move(str(moved), str(processed / f"migrated_{moved.name}"))
+    if count:
+        logger.info("Migrated %d inbox wish(es) to calls", count)
+    return count
 
 
 # Tools a customized prompt may still name although they were renamed (still work as aliases).

@@ -202,7 +202,7 @@ def test_filler_rotates_reserve_and_skips_failed(config_env, queue):
 
 
 def test_breaker_rewinds_program_and_pauses_longer_each_time(config_env, queue):
-    provider = FakeMusicProvider()  # every play "ends" at once
+    provider = FakeMusicProvider()  # every play "ends" at once: a real outage
     block = queue.append(_block(*"abcdef"))
     player = _player(config_env, provider, queue, breaker_pauses=(0.05, 60))
     player.start()
@@ -212,9 +212,27 @@ def test_breaker_rewinds_program_and_pauses_longer_each_time(config_env, queue):
         assert player.breaker_active()
     finally:
         player.stop()
-    # The failed segments were retried after the first pause, and aren't consumed after the second.
-    assert [t.title for t in provider.played] == ["a", "b", "c", "a", "b", "c"]
-    assert queue.get(block.id).next_segment == 0 and queue.get(block.id).status == "queued"
+    # a-c were retried once after the first pause and then given up; while tripped, the first
+    # fresh failure (d) trips again at once - an outage costs one new segment per pause.
+    assert [t.title for t in provider.played] == ["a", "b", "c", "a", "b", "c", "d"]
+    assert queue.get(block.id).next_segment == 3 and queue.get(block.id).status == "playing"
+
+
+def test_broken_tracks_get_two_attempts_then_the_player_moves_on(config_env, queue):
+    provider = FailingProvider(bad={"u:a", "u:b", "u:c"})  # three genuinely broken tracks, then a good one
+    block = queue.append(_block("a", "b", "c", "d"))
+    player = _player(config_env, provider, queue, breaker_pauses=(0.05, 60))
+    player.start()
+    try:
+        assert wait_for(lambda: provider.playing.is_set())
+        assert player.status()["current"]["title"] == "d"
+        assert player.status()["mode"] == "playing"
+        log = player.status()["log"]
+        assert sum("aufgegeben nach 2 Fehlversuchen" in line for line in log) == 3
+    finally:
+        player.stop()
+    assert [t.title for t in provider.played] == ["a", "b", "c", "a", "b", "c", "d"]
+    assert queue.get(block.id).next_segment == 4
 
 
 def test_skip_between_segments_does_not_hit_the_next_one(config_env, queue):
