@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open home fm · Rufen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Chivo+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-page="calls">
+  <div class="wrap">
+    <header class="console">
+      <a class="wordmark" href="/index.html">open home<span>.fm</span></a>
+      <nav class="tabs" aria-label="Bereiche">
+        <a href="/index.html">Sendung</a>
+        <a href="/calls.html" aria-current="page">Rufen</a>
+        <a href="/desks.html">Redaktion</a>
+        <a href="/settings.html">Technik</a>
+      </nav>
+      <div class="onair-status">
+        <div class="lamp" id="lamp" data-state="unknown" role="status">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="lamp-label">…</span>
+        </div>
+        <span class="clock" id="clock"></span>
+      </div>
+    </header>
+    <div class="notices" id="notices" aria-live="polite"></div>
+
+    <main class="calls">
+      <a class="nowbar" id="nowbar" href="/index.html" data-lane="program">
+        <span class="nowbar-label">läuft gerade</span>
+        <span class="nowbar-title" id="nowbar-title">…</span>
+      </a>
+
+      <h1 class="calls-title">Zwischenruf an die Leitstelle</h1>
+
+      <section class="card composer" aria-label="Zwischenruf schreiben oder einsprechen">
+        <div class="who">
+          <button class="who-chip" id="who-chip" type="button" aria-expanded="false" aria-controls="who-panel">
+            <span class="who-label">Wer ruft?</span>
+            <strong id="who-name">…</strong>
+            <span class="who-edit" aria-hidden="true">ändern</span>
+          </button>
+          <div class="who-panel" id="who-panel" hidden>
+            <div class="who-picks" id="who-picks" role="group" aria-label="Schnellauswahl"></div>
+            <div class="who-free">
+              <label for="who-input">Oder Name eintippen</label>
+              <div class="who-row">
+                <input id="who-input" type="text" maxlength="40" autocomplete="nickname" placeholder="z.B. Tante Uschi">
+                <button class="btn" id="who-save" type="button">Übernehmen</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="draft-banner" id="draft-banner" hidden>
+          <span id="draft-text" role="status"></span>
+        </div>
+
+        <label class="sr-only" for="call-text">Dein Zwischenruf</label>
+        <textarea id="call-text" rows="3" maxlength="1000" placeholder="z.B. „Mach bitte das Licht im Wohnzimmer an“ oder „Spielt als Nächstes Queen!“"></textarea>
+
+        <div class="composer-row">
+          <button class="mic-btn" id="mic-btn" type="button" aria-label="Einsprechen">
+            <svg class="icon-mic" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+            <svg class="icon-stop" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+          </button>
+          <span class="rec-timer" id="rec-timer" aria-live="off"></span>
+          <button class="btn ghost" id="discard-draft" type="button" hidden>Verwerfen</button>
+          <button class="btn signal" id="send-call" type="button">Senden</button>
+        </div>
+        <p class="composer-hint" id="composer-hint"></p>
+        <p class="note" id="composer-note" role="status"></p>
+      </section>
+
+      <section class="convo" aria-labelledby="h-convo">
+        <div class="card-head">
+          <h2 id="h-convo">Gespräch</h2>
+          <span class="meta" id="convo-meta"></span>
+        </div>
+        <ol class="call-log" id="call-log" role="log" aria-live="polite" aria-labelledby="h-convo"></ol>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/calls.js"></script>
+</body>
+</html>

@@ -173,9 +173,19 @@
 
   const trackCount = (segs) => segs.filter((s) => s.type === "track").length;
 
-  function removeLabel(segs) {
+  function removeLabel(item, segs) {
+    if (item.lane === "reply") return "Antwort entfernen";
     const n = trackCount(segs);
     return n ? `Block entfernen (${n} Titel)` : "Beitrag entfernen";
+  }
+
+  // A reply names the call it answers: "Antwort an Mama" + the call's text.
+  function replyHead(item) {
+    if (item.lane !== "reply" || !item.call) return "";
+    const who = item.call.author ? `Antwort an ${item.call.author}` : "Antwort auf einen Zwischenruf";
+    return `
+      <p class="reply-to"><span class="who">${esc(who)}</span>
+        ${item.call.text ? `<span class="call">„${esc(item.call.text)}“</span>` : ""}</p>`;
   }
 
   // Start of an item's remaining segments: the server's estimate, or - for the block on air -
@@ -217,7 +227,7 @@
     syncList($("next-list"), rows, {
       className: "block",
       key: (r) => r.item.id,
-      sig: (r) => `${r.item.status}|${r.item.next_segment}|${r.shown}|${r.segs.length}|${r.item.lane}`,
+      sig: (r) => `${r.item.status}|${r.item.next_segment}|${r.shown}|${r.segs.length}|${r.item.lane}|${r.item.call?.author}|${r.item.call?.text}`,
       empty,
       render: (r) => {
         const segItems = r.segs.slice(0, r.shown).map((s, i) => `
@@ -232,10 +242,11 @@
           <div class="block-head">
             ${laneChip(r.item.lane)}
             <span class="when" data-when></span>
-            <span class="meta">${trackCount(r.segs)} Titel · ${fmtMinutes(total)}</span>
-            <button class="btn ghost small" type="button" data-remove="${esc(r.item.id)}"
-              data-count="${trackCount(r.segs)}">${esc(removeLabel(r.segs))}</button>
+            <span class="meta">${trackCount(r.segs) || r.item.lane !== "reply" ? `${trackCount(r.segs)} Titel · ` : ""}${r.item.lane === "reply" ? fmtDuration(total) : fmtMinutes(total)}</span>
+            <button class="btn ghost small" type="button" data-remove="${esc(r.item.id)}" data-fkey="remove"
+              data-lane="${esc(r.item.lane)}" data-count="${trackCount(r.segs)}">${esc(removeLabel(r.item, r.segs))}</button>
           </div>
+          ${replyHead(r.item)}
           ${r.shown ? `<ol class="segs">${segItems}${more ? `<li class="more">+ ${more} weitere</li>` : ""}</ol>` : ""}`;
       },
       update: (el, r) => {
@@ -311,9 +322,11 @@
       try {
         await api(`/api/queue/${encodeURIComponent(id)}`, { method: "DELETE" });
         btn.closest("li.block")?.remove();
-        showUndo(id, count
-          ? `Block mit ${count} Titeln entfernt – die Musikredaktion plant nach.`
-          : "Beitrag entfernt.");
+        showUndo(id, btn.dataset.lane === "reply"
+          ? "Antwort entfernt – im Gespräch steht „vom Sender entfernt“."
+          : count
+            ? `Block mit ${count} Titeln entfernt – die Musikredaktion plant nach.`
+            : "Beitrag entfernt.");
         refreshQueue();
       } catch (err) {
         btn.disabled = false;

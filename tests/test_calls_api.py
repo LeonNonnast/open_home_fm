@@ -83,6 +83,7 @@ def test_text_call_is_dispatched_right_away(client):
     assert client.get(call["reply_audio_url"]).status_code == 200
     queue = client.get("/api/queue").json()["items"]
     assert [i["lane"] for i in queue][0] == "reply" and queue[0]["call_id"] == call["id"]
+    assert queue[0]["call"] == {"id": call["id"], "author": call["author"], "text": call["text"]}
 
     listing = client.get("/api/calls", params={"since": call["updated_at"]}).json()
     assert listing["calls"] == [] and listing["server_time"] and listing["dispatch"]["state"]

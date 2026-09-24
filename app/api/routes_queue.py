@@ -51,7 +51,13 @@ def queue_view(queue: ProgramQueue, player, include_done: bool = False) -> dict:
 
 @router.get("")
 def get_queue(request: Request, include_done: bool = False) -> dict:
-    return queue_view(request.app.state.queue, getattr(request.app.state, "player", None), include_done)
+    view = queue_view(request.app.state.queue, getattr(request.app.state, "player", None), include_done)
+    # Replies name the call they answer ("Antwort an Mama: ...") in the "Sendung" view.
+    calls = getattr(request.app.state, "calls", None)
+    for item in view["items"] + view.get("done", []):
+        call = calls.get(item["call_id"]) if calls is not None and item.get("call_id") else None
+        item["call"] = {"id": call["id"], "author": call["author"], "text": call["text"]} if call else None
+    return view
 
 
 @router.delete("/{item_id}")

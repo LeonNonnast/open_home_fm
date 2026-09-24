@@ -35,6 +35,7 @@ def list_plugins() -> dict:
                     "description": manifest.get("description", ""),
                     "enabled": manifest.get("enabled", True) and name not in disabled,
                     "context": bool(manifest.get("context", False)),
+                    "action": bool(manifest.get("action", False)),
                 }
             )
     return {"plugins": plugins}

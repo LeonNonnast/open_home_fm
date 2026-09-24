@@ -123,9 +123,13 @@ function syncList(container, items, { key, sig = (item) => JSON.stringify(item),
       el.dataset.key = k;
     }
     if (el.dataset.sig !== s) {
+      // Re-rendering replaces the children: keep the focus on the control with the same
+      // data-fkey (e.g. an "Rückgängig" button), if it still exists afterwards.
+      const focused = el.contains(document.activeElement) ? document.activeElement.dataset.fkey : null;
       el.className = item.__empty ? "empty" : className;
       el.innerHTML = item.__empty ? empty : render(item);
       el.dataset.sig = s;
+      if (focused) el.querySelector(`[data-fkey="${CSS.escape(focused)}"]`)?.focus();
     }
     if (!item.__empty && update) update(el, item);
     if (container.children[index] !== el) container.insertBefore(el, container.children[index] || null);
@@ -135,11 +139,15 @@ function syncList(container, items, { key, sig = (item) => JSON.stringify(item),
 
 // ---------- desks (short status, shared by Sendung and Redaktion) ----------
 
-const DESK_NAMES = { music: "Musik" };
+const DESK_NAMES = { music: "Musik", dispatch: "Leitstelle" };
+
+const lineHtml = (lines) =>
+  lines.map((l) => `<p class="desk-line${l.kind === "err" ? " err" : ""}">${esc(l.text)}</p>`).join("");
 
 // {state, label, lines[]} for a desk from /api/status (short) or /api/desks (full).
-function deskSummary(desk) {
+function deskSummary(desk, name = desk?.name) {
   if (!desk) return { state: "off", label: "unbekannt", lines: [] };
+  if (name === "dispatch") return dispatchSummary(desk);
   const lines = [];
   let state = desk.state || "idle";
   let label = { idle: "bereit", running: "plant…", error: "Fehler" }[state] || state;
@@ -163,6 +171,48 @@ function deskSummary(desk) {
   }
   return { state, label, lines };
 }
+
+// The dispatch desk ("Leitstelle"): "wartet auf Zwischenrufe · zuletzt 07:14 · 0 offen".
+function dispatchSummary(desk) {
+  const lines = [];
+  let state = desk.state || "idle";
+  let label = { idle: "wartet", running: "sortiert…", error: "Fehler" }[state] || state;
+  const open = desk.open_calls || 0;
+  if (desk.enabled === false) {
+    state = "off";
+    label = "aus";
+    lines.push({ text: `Aus – Zwischenrufe bleiben liegen, bis die Leitstelle wieder an ist${open ? ` · ${open} offen` : ""}.` });
+  } else {
+    const parts = [state === "running" ? "sortiert Zwischenrufe ein" : "wartet auf Zwischenrufe"];
+    if (desk.last_run_at) parts.push(`zuletzt ${fmtWhen(desk.last_run_at)}`);
+    parts.push(`${open} offen`);
+    lines.push({ text: parts.join(" · ") });
+  }
+  if (desk.queued_calls) {
+    lines.push({ text: `${desk.queued_calls} ${desk.queued_calls === 1 ? "Antwort" : "Antworten"} im Programm eingeplant` });
+  }
+  if (desk.last_error && desk.consecutive_failures > 0) {
+    const retry = desk.backoff_until ? ` · nächster Versuch ${fmtWhen(desk.backoff_until)}` : "";
+    lines.push({ text: `Fehler: ${desk.last_error}${retry}`, kind: "err" });
+  }
+  return { state, label, lines };
+}
+
+// ---------- local storage (per device; may be unavailable) ----------
+
+const Store = {
+  get(key, fallback = null) {
+    try {
+      const raw = localStorage.getItem(`ohfm.${key}`);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try { localStorage.setItem(`ohfm.${key}`, JSON.stringify(value)); } catch { /* private mode */ }
+  },
+};
 
 // ---------- header: lamp, clock, notices ----------
 
@@ -262,7 +312,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(tickClock, 15000);
   initNotices();
   const page = document.body.dataset.page;
-  if (page === "broadcast") Status.interval = 5000;
+  if (page === "broadcast" || page === "calls") Status.interval = 5000;
   try {
     Pages[page]?.();
   } finally {

@@ -15,7 +15,7 @@
       <a class="wordmark" href="/index.html">open home<span>.fm</span></a>
       <nav class="tabs" aria-label="Bereiche">
         <a href="/index.html">Sendung</a>
-        <a href="/inbox.html">Rufen</a>
+        <a href="/calls.html">Rufen</a>
         <a href="/desks.html" aria-current="page">Redaktion</a>
         <a href="/settings.html">Technik</a>
       </nav>
@@ -31,7 +31,7 @@
 
     <main class="page">
       <div class="desk-cards" id="desk-cards">
-        <section class="card desk-card" id="card-music" aria-labelledby="h-card-music" aria-current="true">
+        <section class="card desk-card" id="card-music" data-desk="music" aria-labelledby="h-card-music" aria-current="true">
           <div class="card-head">
             <h2 id="h-card-music"><a href="#music">Musik</a></h2>
             <span class="desk-head-right">
@@ -54,43 +54,73 @@
             <span class="note" id="music-run-note" role="status"></span>
           </div>
         </section>
+
+        <section class="card desk-card" id="card-dispatch" data-desk="dispatch" aria-labelledby="h-card-dispatch">
+          <div class="card-head">
+            <h2 id="h-card-dispatch"><a href="#dispatch">Leitstelle</a></h2>
+            <span class="desk-head-right">
+              <span class="state-lamp" id="dispatch-lamp" data-state="idle">
+                <span class="dot" aria-hidden="true"></span><span id="dispatch-lamp-label">…</span>
+              </span>
+              <label class="switch" title="Leitstelle an/aus">
+                <input type="checkbox" id="dispatch-enabled" aria-label="Leitstelle eingeschaltet">
+                <span class="track" aria-hidden="true"></span>
+              </label>
+            </span>
+          </div>
+          <p class="fill-text" id="dispatch-main">…</p>
+          <div id="dispatch-lines"></div>
+          <div class="card-foot">
+            <button class="btn" id="dispatch-run" type="button">Offene bearbeiten</button>
+            <span class="note" id="dispatch-run-note" role="status"></span>
+          </div>
+        </section>
       </div>
 
-      <section class="card" id="detail-music" aria-labelledby="h-detail-music">
+      <section class="card desk-detail" id="detail-music" data-desk="music" aria-labelledby="h-detail-music">
         <div class="detail-head">
           <h2 id="h-detail-music">Musikredaktion</h2>
           <div class="subtabs" role="tablist" aria-label="Musikredaktion">
-            <button role="tab" type="button" id="tab-settings" aria-controls="panel-settings" data-tab="settings" aria-selected="true">Einstellungen</button>
-            <button role="tab" type="button" id="tab-prompt" aria-controls="panel-prompt" data-tab="prompt" aria-selected="false" tabindex="-1">Prompt</button>
-            <button role="tab" type="button" id="tab-history" aria-controls="panel-history" data-tab="history" aria-selected="false" tabindex="-1">Verlauf</button>
+            <button role="tab" type="button" id="music-tab-settings" aria-controls="music-panel-settings" data-tab="settings" aria-selected="true">Einstellungen</button>
+            <button role="tab" type="button" id="music-tab-prompt" aria-controls="music-panel-prompt" data-tab="prompt" aria-selected="false" tabindex="-1">Prompt</button>
+            <button role="tab" type="button" id="music-tab-history" aria-controls="music-panel-history" data-tab="history" aria-selected="false" tabindex="-1">Verlauf</button>
           </div>
         </div>
 
-        <div role="tabpanel" id="panel-settings" aria-labelledby="tab-settings">
+        <div role="tabpanel" id="music-panel-settings" aria-labelledby="music-tab-settings">
+          <section class="mailbox" aria-labelledby="h-music-wishes">
+            <div class="card-head">
+              <h3 id="h-music-wishes">Offene Wünsche</h3>
+              <span class="meta" id="music-wishes-meta"></span>
+            </div>
+            <p class="hint" style="margin-bottom:8px">Vorgemerkt von der Leitstelle („demnächst“). Die Musikredaktion baut sie in einen der nächsten Blöcke ein.</p>
+            <ul class="mail-list" id="music-wishes"></ul>
+          </section>
+
           <div class="field-grid">
             <div class="field">
-              <label for="s-fill_threshold_minutes">Nachplanen unter (min)</label>
-              <input id="s-fill_threshold_minutes" type="number" min="1" max="120" step="1" inputmode="numeric">
+              <label for="music-s-fill_threshold_minutes">Nachplanen unter (min)</label>
+              <input id="music-s-fill_threshold_minutes" type="number" min="1" max="240" step="1" inputmode="numeric">
             </div>
             <div class="field">
-              <label for="s-block_minutes">Blocklänge (min)</label>
-              <input id="s-block_minutes" type="number" min="5" max="120" step="1" inputmode="numeric">
+              <label for="music-s-block_minutes">Blocklänge (min)</label>
+              <input id="music-s-block_minutes" type="number" min="1" max="240" step="1" inputmode="numeric">
             </div>
             <div class="field">
-              <label for="s-max_queued_program_minutes">Höchstens eingeplant (min)</label>
-              <input id="s-max_queued_program_minutes" type="number" min="10" max="240" step="1" inputmode="numeric">
+              <label for="music-s-max_queued_program_minutes">Höchstens eingeplant (min)</label>
+              <input id="music-s-max_queued_program_minutes" type="number" min="2" max="480" step="1" inputmode="numeric">
             </div>
             <div class="field">
-              <label for="s-songs_per_announcement">Ansage höchstens alle N Songs</label>
-              <input id="s-songs_per_announcement" type="number" min="1" max="20" step="1" inputmode="numeric">
+              <label for="music-s-songs_per_announcement">Ansage höchstens alle N Songs</label>
+              <input id="music-s-songs_per_announcement" type="number" min="1" max="50" step="1" inputmode="numeric">
             </div>
             <div class="field">
-              <label for="s-no_repeat_minutes">Keine Wiederholung für (min)</label>
-              <input id="s-no_repeat_minutes" type="number" min="0" max="1440" step="1" inputmode="numeric">
+              <label for="music-s-no_repeat_minutes">Keine Wiederholung für (min)</label>
+              <input id="music-s-no_repeat_minutes" type="number" min="0" max="10080" step="1" inputmode="numeric">
             </div>
             <div class="field">
-              <label for="s-max_tool_iterations">Max. Tool-Runden je Lauf</label>
-              <input id="s-max_tool_iterations" type="number" min="1" max="100" step="1" inputmode="numeric">
+              <label for="music-s-max_tool_iterations">Max. Tool-Runden je Lauf</label>
+              <input id="music-s-max_tool_iterations" type="number" min="1" max="200" step="1" inputmode="numeric">
             </div>
           </div>
 
@@ -99,13 +129,13 @@
             <p class="hint" style="margin-bottom:8px">„Nutzen“: die Redaktion kann das Plugin aufrufen. „Kontext“: das Ergebnis wird jedem Lauf automatisch mitgegeben. Installiert und global aktiviert werden Plugins unter <a href="/settings.html">Technik</a>.</p>
             <table class="check-table">
               <thead><tr><th scope="col">Plugin</th><th scope="col" class="c">Nutzen</th><th scope="col" class="c">Kontext</th></tr></thead>
-              <tbody id="desk-plugins"></tbody>
+              <tbody id="music-plugins"></tbody>
             </table>
           </fieldset>
 
           <div class="card-foot">
-            <button class="btn" id="save-desk" type="button">Einstellungen speichern</button>
-            <span class="note" id="desk-note" role="status"></span>
+            <button class="btn" id="music-save" type="button">Einstellungen speichern</button>
+            <span class="note" id="music-note" role="status"></span>
           </div>
 
           <details class="advanced reserve" id="reserve">
@@ -115,23 +145,113 @@
           </details>
         </div>
 
-        <div role="tabpanel" id="panel-prompt" aria-labelledby="tab-prompt" hidden>
+        <div role="tabpanel" id="music-panel-prompt" aria-labelledby="music-tab-prompt" hidden>
           <div class="card-head">
-            <span class="badge" id="prompt-badge">…</span>
-            <span class="meta" id="prompt-meta"></span>
+            <span class="badge" id="music-prompt-badge">…</span>
+            <span class="meta" id="music-prompt-meta"></span>
           </div>
-          <label for="desk-prompt" hidden>Prompt der Musikredaktion</label>
-          <textarea id="desk-prompt" spellcheck="false" rows="18"></textarea>
+          <label for="music-prompt" hidden>Prompt der Musikredaktion</label>
+          <textarea id="music-prompt" spellcheck="false" rows="18"></textarea>
           <div class="card-foot">
-            <button class="btn" id="save-prompt" type="button">Prompt speichern</button>
-            <button class="btn ghost" id="reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
-            <span class="note" id="prompt-note" role="status"></span>
+            <button class="btn" id="music-save-prompt" type="button">Prompt speichern</button>
+            <button class="btn ghost" id="music-reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
+            <span class="note" id="music-prompt-note" role="status"></span>
           </div>
         </div>
 
-        <div role="tabpanel" id="panel-history" aria-labelledby="tab-history" hidden>
+        <div role="tabpanel" id="music-panel-history" aria-labelledby="music-tab-history" hidden>
           <p class="hint" style="margin-bottom:12px">Die letzten Läufe der Musikredaktion, mit komplettem Gesprächsverlauf. Die jüngsten liest die Redaktion beim nächsten Lauf mit.</p>
-          <div class="history" id="history-list"></div>
+          <div class="history" id="music-history"></div>
+        </div>
+      </section>
+
+      <section class="card desk-detail" id="detail-dispatch" data-desk="dispatch" aria-labelledby="h-detail-dispatch" hidden>
+        <div class="detail-head">
+          <h2 id="h-detail-dispatch">Leitstelle</h2>
+          <div class="subtabs" role="tablist" aria-label="Leitstelle">
+            <button role="tab" type="button" id="dispatch-tab-settings" aria-controls="dispatch-panel-settings" data-tab="settings" aria-selected="true">Einstellungen</button>
+            <button role="tab" type="button" id="dispatch-tab-prompt" aria-controls="dispatch-panel-prompt" data-tab="prompt" aria-selected="false" tabindex="-1">Prompt</button>
+            <button role="tab" type="button" id="dispatch-tab-history" aria-controls="dispatch-panel-history" data-tab="history" aria-selected="false" tabindex="-1">Verlauf</button>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="dispatch-panel-settings" aria-labelledby="dispatch-tab-settings">
+          <p class="hint" style="margin-bottom:14px">Die Leitstelle nimmt jeden Zwischenruf aus <a href="/calls.html">Rufen</a> sofort an und sortiert ihn ein: direkte Aktionen (Licht) gleich, „als Nächstes“ ins Programm, Wünsche an die Musikredaktion, Hinweise für die Nachrichten.</p>
+
+          <div class="switch-row">
+            <span class="switch-text">
+              <span id="dispatch-l-allow_interrupt">Darf „sofort“ die Musik unterbrechen</span>
+              <span class="hint" id="dispatch-h-allow_interrupt" style="display:block">Unterbrechen kommt in einer späteren Version – bis dahin läuft „sofort“ als Nächstes.</span>
+            </span>
+            <label class="switch">
+              <input type="checkbox" id="dispatch-s-allow_interrupt" aria-labelledby="dispatch-l-allow_interrupt" aria-describedby="dispatch-h-allow_interrupt">
+              <span class="track" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <div class="field-grid">
+            <div class="field">
+              <label for="dispatch-s-min_minutes_between_interrupts">Schutzabstand (min)</label>
+              <input id="dispatch-s-min_minutes_between_interrupts" type="number" min="0" max="240" step="1" inputmode="numeric" aria-describedby="dispatch-h-min_minutes_between_interrupts">
+              <span class="hint" id="dispatch-h-min_minutes_between_interrupts">zwischen zwei Unterbrechungen</span>
+            </div>
+            <div class="field">
+              <label for="dispatch-s-reply_expires_minutes">Zwischenruf verfällt nach (min)</label>
+              <input id="dispatch-s-reply_expires_minutes" type="number" min="1" max="1440" step="1" inputmode="numeric" aria-describedby="dispatch-h-reply_expires_minutes">
+              <span class="hint" id="dispatch-h-reply_expires_minutes">wenn die Leitstelle so lange nicht erreichbar ist</span>
+            </div>
+            <div class="field">
+              <label for="dispatch-s-wish_default_valid_hours">Wünsche & Hinweise gelten (h)</label>
+              <input id="dispatch-s-wish_default_valid_hours" type="number" min="1" max="336" step="1" inputmode="numeric" aria-describedby="dispatch-h-wish_default_valid_hours">
+              <span class="hint" id="dispatch-h-wish_default_valid_hours">wenn der Hörer nichts anderes sagt</span>
+            </div>
+            <div class="field">
+              <label for="dispatch-s-max_tool_iterations">Max. Tool-Runden je Zwischenruf</label>
+              <input id="dispatch-s-max_tool_iterations" type="number" min="1" max="200" step="1" inputmode="numeric">
+            </div>
+          </div>
+
+          <fieldset>
+            <legend>Plugins</legend>
+            <p class="hint" style="margin-bottom:8px">Welche direkten Aktionen (z.&nbsp;B. Licht) und Abfragen (z.&nbsp;B. Wetter) die Leitstelle nutzen darf. Installiert und global aktiviert werden Plugins unter <a href="/settings.html">Technik</a>.</p>
+            <table class="check-table">
+              <thead><tr><th scope="col">Plugin</th><th scope="col" class="c">Nutzen</th></tr></thead>
+              <tbody id="dispatch-plugins"></tbody>
+            </table>
+          </fieldset>
+
+          <div class="card-foot">
+            <button class="btn" id="dispatch-save" type="button">Einstellungen speichern</button>
+            <span class="note" id="dispatch-note" role="status"></span>
+          </div>
+
+          <section class="mailbox divided" aria-labelledby="h-dispatch-notes">
+            <div class="card-head">
+              <h3 id="h-dispatch-notes">Für die Nachrichten vorgemerkt</h3>
+              <span class="meta" id="dispatch-notes-meta"></span>
+            </div>
+            <p class="hint" style="margin-bottom:8px">Hinweise aus Zwischenrufen. Sie werden gesammelt, bis es eine Nachrichtenredaktion gibt, die sie verwendet.</p>
+            <ul class="mail-list" id="dispatch-notes"></ul>
+          </section>
+        </div>
+
+        <div role="tabpanel" id="dispatch-panel-prompt" aria-labelledby="dispatch-tab-prompt" hidden>
+          <div class="card-head">
+            <span class="badge" id="dispatch-prompt-badge">…</span>
+            <span class="meta" id="dispatch-prompt-meta"></span>
+          </div>
+          <label for="dispatch-prompt" hidden>Prompt der Leitstelle</label>
+          <textarea id="dispatch-prompt" spellcheck="false" rows="18"></textarea>
+          <div class="card-foot">
+            <button class="btn" id="dispatch-save-prompt" type="button">Prompt speichern</button>
+            <button class="btn ghost" id="dispatch-reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
+            <span class="note" id="dispatch-prompt-note" role="status"></span>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="dispatch-panel-history" aria-labelledby="dispatch-tab-history" hidden>
+          <p class="hint" style="margin-bottom:12px">Die letzten Läufe der Leitstelle – je Zwischenruf einer, mit komplettem Gesprächsverlauf.</p>
+          <div class="history" id="dispatch-history"></div>
         </div>
       </section>
     </main>

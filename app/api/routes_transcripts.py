@@ -21,6 +21,7 @@ def get_transcripts(desk: str | None = None) -> dict:
             "id": t["id"],
             "desk": t.get("desk"),
             "trigger": t.get("trigger"),
+            "inputs": t.get("inputs"),
             "created_at": t["created_at"],
             "final_message": t.get("final_message", ""),
             "error": t.get("error"),
