@@ -436,6 +436,18 @@ button:focus-visible, a:focus-visible, summary:focus-visible, .switch input:focu
 .note.ok { color: var(--ok); }
 .note.err { color: var(--crit); }
 
+/* Voice card */
+
+.btn.small { padding: 5px 10px; font-size: 0.78rem; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.field.slider label { display: flex; justify-content: space-between; gap: 8px; }
+.field.slider output { color: var(--ink); text-transform: none; letter-spacing: 0; }
+input[type="range"] { padding: 0; border: 0; background: transparent; accent-color: var(--signal); }
+textarea.short { min-height: 0; }
+.field.download { justify-content: flex-end; }
+.voice-more { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.voice-more summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); margin-bottom: 10px; }
+
 /* Switch */
 
 .switch-row {

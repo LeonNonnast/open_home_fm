@@ -154,6 +154,11 @@ async function saveConfig(noteEl) {
   updated.llm[provider] = { ...(updated.llm[provider] || {}), model: $("llm-model").value };
   updated.music = { ...(updated.music || {}), provider: $("music-provider").value };
   updated.agent = { ...(updated.agent || {}), loop_interval_seconds: parseInt($("loop-interval").value, 10) || 1800 };
+  if ($("voice-model").value) {
+    updated.tts = updated.tts || {};
+    updated.tts.piper = { ...(updated.tts.piper || {}), ...voiceSettings() };
+    delete updated.tts.piper.text;
+  }
   updated.schedule = {
     ...(updated.schedule || {}),
     enabled: $("schedule-enabled").checked,
@@ -287,6 +292,136 @@ async function loadHistory() {
   });
 }
 
+// ---------- Voice card ----------
+
+const VOICE_PRESETS = {
+  neutral: { length_scale: 1.0, pitch_semitones: 0, echo: 0 },
+  // Calm, slightly deeper, with a touch of room - the "AI butler" sound.
+  jarvis: { length_scale: 1.08, pitch_semitones: -1.5, echo: 0.3 },
+  night: { length_scale: 1.2, pitch_semitones: -3, echo: 0.5 },
+};
+
+let installedVoices = [];
+
+function voiceSettings() {
+  return {
+    voice_model: $("voice-model").value,
+    speaker: $("voice-speaker-field").hidden ? null : $("voice-speaker").value || null,
+    length_scale: parseFloat($("voice-length").value),
+    pitch_semitones: parseFloat($("voice-pitch").value),
+    echo: parseFloat($("voice-echo").value),
+    text: $("voice-text").value.trim(),
+  };
+}
+
+function renderVoiceOutputs() {
+  const length = parseFloat($("voice-length").value);
+  const pitch = parseFloat($("voice-pitch").value);
+  const fmt = (n) => n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  $("voice-length-out").textContent =
+    length === 1 ? "normal" : `${fmt(length)}× ${length > 1 ? "langsamer" : "schneller"}`;
+  $("voice-pitch-out").textContent =
+    pitch === 0 ? "original" : `${pitch > 0 ? "+" : ""}${pitch.toLocaleString("de-DE")} Halbtöne`;
+  $("voice-echo-out").textContent = `${Math.round(parseFloat($("voice-echo").value) * 100)} %`;
+}
+
+function renderSpeakers(selected) {
+  const voice = installedVoices.find((v) => v.voice_model === $("voice-model").value);
+  const speakers = voice?.speakers || [];
+  $("voice-speaker-field").hidden = speakers.length === 0;
+  $("voice-speaker").innerHTML = speakers.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  if (selected && speakers.includes(selected)) $("voice-speaker").value = selected;
+}
+
+async function loadVoices() {
+  const piper = currentConfig.tts?.piper || {};
+  const { installed, catalog } = await api("/api/voice");
+  installedVoices = installed;
+
+  const configured = piper.voice_model || "";
+  const options = installed.map((v) => `<option value="${esc(v.voice_model)}">${esc(v.id)}</option>`);
+  if (configured && !installed.some((v) => v.voice_model === configured)) {
+    options.unshift(`<option value="${esc(configured)}">${esc(configured)} (fehlt)</option>`);
+  }
+  $("voice-model").innerHTML = options.join("") || `<option value="">Keine Stimme installiert</option>`;
+  $("voice-model").value = configured || installed[0]?.voice_model || "";
+  renderSpeakers(piper.speaker);
+
+  $("voice-length").value = piper.length_scale ?? 1;
+  $("voice-pitch").value = piper.pitch_semitones ?? 0;
+  $("voice-echo").value = piper.echo ?? 0;
+  renderVoiceOutputs();
+
+  $("voice-catalog").innerHTML = catalog.length
+    ? catalog.map((v) => `<option value="${esc(v.id)}" ${v.installed ? "disabled" : ""}>` +
+        `${esc(v.name)} · ${esc(v.quality)}${v.speakers > 1 ? ` · ${v.speakers} Sprecher` : ""}` +
+        ` · ${v.size_mb} MB${v.installed ? " · installiert" : ""}</option>`).join("")
+    : `<option value="">Katalog nicht erreichbar (offline?)</option>`;
+}
+
+function initVoice() {
+  ["voice-length", "voice-pitch", "voice-echo"].forEach((id) => $(id).addEventListener("input", renderVoiceOutputs));
+  $("voice-model").addEventListener("change", () => renderSpeakers());
+
+  document.querySelectorAll("[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const preset = VOICE_PRESETS[btn.dataset.preset];
+      $("voice-length").value = preset.length_scale;
+      $("voice-pitch").value = preset.pitch_semitones;
+      $("voice-echo").value = preset.echo;
+      renderVoiceOutputs();
+      note($("voice-note"), "Voreinstellung übernommen – Hörprobe anhören oder speichern.");
+    });
+  });
+
+  let audio = null;
+  $("voice-preview").addEventListener("click", async () => {
+    const btn = $("voice-preview");
+    const settings = voiceSettings();
+    if (!settings.voice_model || !settings.text) {
+      note($("voice-note"), "Stimme und Testsatz dürfen nicht leer sein.", "err");
+      return;
+    }
+    btn.disabled = true;
+    note($("voice-note"), "Wird gesprochen…");
+    try {
+      const res = await fetch("/api/voice/preview", { method: "POST", ...jsonBody(settings) });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      if (audio) audio.pause();
+      audio = new Audio(URL.createObjectURL(await res.blob()));
+      await audio.play();
+      note($("voice-note"), "");
+    } catch (e) {
+      note($("voice-note"), "Hörprobe fehlgeschlagen (" + e.message + ").", "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("save-voice").addEventListener("click", async () => {
+    await saveConfig($("voice-note"));
+  });
+
+  $("voice-download").addEventListener("click", async () => {
+    const id = $("voice-catalog").value;
+    if (!id) return;
+    const btn = $("voice-download");
+    btn.disabled = true;
+    note($("voice-note"), `Lade ${id} herunter – das kann eine Minute dauern…`);
+    try {
+      const { voice_model } = await api("/api/voice/download", { method: "POST", ...jsonBody({ id }) });
+      await loadVoices();
+      $("voice-model").value = voice_model;
+      renderSpeakers();
+      note($("voice-note"), "Heruntergeladen und ausgewählt – Hörprobe anhören, dann speichern.", "ok");
+    } catch (e) {
+      note($("voice-note"), "Download fehlgeschlagen (" + e.message + ").", "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 async function initStudio() {
   const [prompt, config] = await Promise.all([
     api("/api/config/system_prompt"),
@@ -339,7 +474,10 @@ async function initStudio() {
     }
   });
 
-  await Promise.all([refreshStatus(), loadPlugins(), loadHistory()]);
+  initVoice();
+  await Promise.all([refreshStatus(), loadPlugins(), loadHistory(), loadVoices().catch(() => {
+    note($("voice-note"), "Stimmen konnten nicht geladen werden.", "err");
+  })]);
   setInterval(refreshStatus, 15000);
   setInterval(() => renderDial(currentConfig), 60000);
 }

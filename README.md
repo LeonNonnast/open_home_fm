@@ -160,7 +160,10 @@ als Standard an.
 5. **TTS (Piper, lokal)**: `.venv/bin/pip install piper-tts` und ein Stimmmodell (`.onnx` +
    `.onnx.json`) von [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) nach
    `models/tts/` legen, Pfade in `config.yaml` (`tts.piper.binary`, `tts.piper.voice_model`)
-   eintragen. Der Installer erledigt beides inkl. Stimmauswahl und Hörprobe.
+   eintragen. Der Installer erledigt beides inkl. Stimmauswahl und Hörprobe. Danach lässt sich
+   die Stimme im Web-UI (Karte „Stimme“) weiter anpassen: weitere deutsche Stimmen laden,
+   Sprecher (bei Mehrsprecher-Modellen), Tempo, Tonhöhe und Hall - mit Hörprobe im Browser und
+   Voreinstellungen wie „Jarvis“. Tonhöhe und Hall rechnet `ffmpeg` nach.
 6. **STT (faster-whisper, lokal)**: Kein manueller Download nötig - das Modell wird beim ersten
    Transkriptions-Aufruf automatisch heruntergeladen (Internetverbindung beim ersten Mal nötig).
 7. **Audio-Ausgang**: `audio.output_device` in config.yaml auf den ALSA/Pulse-Sink zeigen lassen,

@@ -17,6 +17,7 @@ from app.api.routes_inbox import router as inbox_router
 from app.api.routes_plugins import router as plugins_router
 from app.api.routes_status import router as status_router
 from app.api.routes_transcripts import router as transcripts_router
+from app.api.routes_voice import router as voice_router
 from app.audio.player import ScriptPlayer
 from app.audio.stt import create_stt_engine
 from app.config import ROOT_DIR, load_config
@@ -65,5 +66,6 @@ app.include_router(inbox_router)
 app.include_router(plugins_router)
 app.include_router(status_router)
 app.include_router(transcripts_router)
+app.include_router(voice_router)
 
 app.mount("/", StaticFiles(directory=str(ROOT_DIR / "web"), html=True), name="web")

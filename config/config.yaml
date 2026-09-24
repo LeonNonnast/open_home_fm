@@ -56,6 +56,14 @@ tts:
   piper:
     binary: "piper"
     voice_model: "models/tts/de_DE-thorsten-medium.onnx"
+    # Everything below is also adjustable (with preview) in the web UI's "Stimme" card.
+    # Speaker name for multi-speaker models (e.g. thorsten_emotional: "neutral"), else null.
+    speaker: null
+    # >1 speaks slower, <1 faster.
+    length_scale: 1.0
+    # Post-processing via ffmpeg: pitch shift in semitones (tempo stays) and reverb amount 0..1.
+    pitch_semitones: 0
+    echo: 0
 
 stt:
   # "faster_whisper" (local) | "none"
