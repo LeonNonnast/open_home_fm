@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.config import (
+    config_lock,
     is_prompt_customized,
     is_stopped,
     load_config,
@@ -56,8 +57,9 @@ def get_config() -> dict:
 @router.put("")
 def put_config(config: dict, request: Request) -> dict:
     """Replaces the whole config; keys left out fall back to their defaults."""
-    old = load_config()
-    save_config(_keep_stopped(config, old))
+    with config_lock():  # a Stop in between would be overwritten with the stale state
+        old = load_config()
+        save_config(_keep_stopped(config, old))
     _provider_changed(request, old, load_config())
     return {"status": "ok"}
 
@@ -68,8 +70,9 @@ def patch_config(partial: dict, request: Request) -> dict:
 
     Everything is re-read per run/segment, so changes apply without a restart - except
     `music.provider` for the player (see _provider_changed)."""
-    old = load_config()
-    new = update_config(_keep_stopped(partial, old) if "station" in partial else partial)
+    with config_lock():
+        old = load_config()
+        new = update_config(_keep_stopped(partial, old) if "station" in partial else partial)
     _provider_changed(request, old, new)
     return new
 

@@ -314,3 +314,46 @@ def test_segment_picked_before_a_stop_does_not_start(config_env, queue, monkeypa
     player._step()
     assert provider.played == [] and player.status()["current"] is None
     assert queue.get(block.id).next_segment == 0
+
+
+def test_stop_and_play_end_a_circuit_breaker_pause(config_env, queue):
+    provider = FakeMusicProvider()  # every play "ends" at once: the breaker trips, pause 60 s
+    queue.append(_block(*"abcdef"))
+    player = _player(config_env, provider, queue, breaker_pauses=(60,))
+    player.start()
+    try:
+        assert wait_for(lambda: player.status()["mode"] == "paused")
+        cfg.set_stopped(True)
+        assert not player.halt()  # nothing on air - but the pause ends
+        assert wait_for(lambda: player.status()["mode"] == "stopped", timeout=1)
+        assert player.status()["notice"] is None and not player.breaker_active()
+        played = len(provider.played)
+        cfg.set_stopped(False)
+        player.resume()
+        queue.append(_block("x"))  # the program expired at the stop - the music desk plans anew
+        assert wait_for(lambda: len(provider.played) > played, timeout=1)
+    finally:
+        player.stop()
+
+
+def test_play_expires_blocks_appended_while_stopped(config_env, queue):
+    # A desk run still going at the stop appends its block afterwards: planned for back then.
+    provider = FakeMusicProvider(block=True)
+    player = _player(config_env, provider, queue)
+    cfg.set_stopped(True)
+    player._step()
+    assert player.status()["mode"] == "stopped"
+    stale = queue.append(_block("old"))
+    cfg.set_stopped(False)
+    player.resume()
+    time.sleep(0.01)
+    fresh = queue.append(_block("new"))
+    player.start()
+    try:
+        assert wait_for(lambda: provider.playing.is_set())
+        assert player.status()["current"]["title"] == "new"
+        assert queue.get(stale.id).status == "expired"
+        assert any("Sender gestartet, 1 Beiträge verfallen" in line for line in player.status()["log"])
+    finally:
+        player.stop()
+    assert queue.get(fresh.id).status != "expired"

@@ -86,6 +86,10 @@ class QueuePlayer:
 
         self._stop_event = threading.Event()
         self._skip_event = threading.Event()
+        # Wakes the player's waits (idle, circuit-breaker pause) early for Stop/Play and shutdown.
+        # Separate from _stop_event, which alone ends the loop.
+        self._wake_event = threading.Event()
+        self._resumed_at: datetime | None = None
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
         self._current: dict | None = None
@@ -113,6 +117,7 @@ class QueuePlayer:
     def stop(self) -> None:
         self._stop_event.set()
         self._skip_event.set()
+        self._wake_event.set()
         if self._thread is not None:
             self._thread.join(timeout=8)
         try:
@@ -136,12 +141,24 @@ class QueuePlayer:
         """Cuts the segment on air right away - called once `station.stopped` is saved. The loop
         then stays stopped (see _step) and silences the provider; False when nothing was playing."""
         # Under the segment-boundary lock like skip(); a segment that starts after this sees the
-        # stop flag in _play_segment and doesn't start at all.
+        # stop flag in _play_segment and doesn't start at all. A circuit-breaker pause ends too.
+        self._wake_event.set()
         with self._state_lock:
             if self._current is None:
                 return False
             self._skip_event.set()
         return True
+
+    def resume(self) -> None:
+        """Play: called once `station.stopped` is cleared - the loop starts at once instead of
+        after its idle poll."""
+        self._resumed_at = datetime.now(timezone.utc)
+        self._wake_event.set()
+
+    def _wait(self, seconds: float) -> None:
+        """Idle/pause wait that Stop, Play and shutdown end early."""
+        self._wake_event.wait(seconds)
+        self._wake_event.clear()
 
     def breaker_active(self) -> bool:
         """True from a circuit-breaker trip until a segment plays properly again - the fill
@@ -265,16 +282,26 @@ class QueuePlayer:
             elif stopped and not self._was_stopped:
                 self._log_line(reason)  # stopped during the Sendepause
             elif on_air and self._was_on_air is False:
-                self._log_line("Sender gestartet" if self._was_stopped else "Sendebeginn")
+                if self._was_stopped:
+                    # A desk run still going at the stop may have appended a block since - it was
+                    # planned for back then, Play starts with a fresh plan (blocks planned after
+                    # Play stay).
+                    expired = self.queue.expire_lanes(("program", "filler"), "Sender gestoppt",
+                                                      created_before=self._resumed_at)
+                    self._log_line(f"Sender gestartet{f', {expired} Beiträge verfallen' if expired else ''}")
+                else:
+                    self._log_line("Sendebeginn")
             if stopped and not self._was_stopped:
                 try:
                     self.provider.stop()  # also silences whatever the source still plays
                 except Exception:
                     logger.warning("Could not stop the music provider", exc_info=True)
+                self._reset_breaker()  # Play is a fresh start, not the next step of a pause
+                self._resumed_at = None
             self._was_on_air, self._was_stopped = on_air, stopped
         if not on_air:
             self._set_mode("stopped" if stopped else "off_air")
-            self._stop_event.wait(self.idle_poll_seconds)
+            self._wait(self.idle_poll_seconds)
             return
 
         item = self.queue.next_item()
@@ -402,13 +429,7 @@ class QueuePlayer:
         expected = segment.duration_seconds or (segment.estimated_seconds() if playable else 0)
         failed = not user_stopped and elapsed < SHORT_SEGMENT_SECONDS and (error or elapsed < expected * 0.5)
         if not failed:
-            self._short_streak.clear()
-            self._attempts.clear()
-            self._breaker_trips = 0
-            self._breaker_active = False
-            if self._notice:
-                with self._state_lock:
-                    self._notice = None
+            self._reset_breaker()
             return
         if playable:
             # Never in the play history (< 30 s) - without this the filler picks it again and again.
@@ -444,7 +465,21 @@ class QueuePlayer:
         self._set_mode("paused", text)
         self._log_line(f"Schutzschalter: {count} Segment(e) in Folge nach < {SHORT_SEGMENT_SECONDS} s beendet, "
                        f"Pause {pause:.0f} s{f', {rewound} Segment(e) bleiben eingeplant' if rewound else ''}")
-        self._stop_event.wait(pause)
+        # Ended early by Stop (halt()) - the next step then halts. Cleared first, so only a wake
+        # from now on counts; a stop saved just before is caught by the check.
+        self._wake_event.clear()
+        if not is_stopped(load_config()):
+            self._wake_event.wait(pause)
+        self._wake_event.clear()
+
+    def _reset_breaker(self) -> None:
+        self._short_streak.clear()
+        self._attempts.clear()
+        self._breaker_trips = 0
+        self._breaker_active = False
+        if self._notice:
+            with self._state_lock:
+                self._notice = None
 
     @staticmethod
     def _track(segment: Segment) -> Track:

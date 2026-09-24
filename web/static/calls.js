@@ -90,6 +90,8 @@
   };
 
   function actionState(a) {
+    // Stopped: the ETAs ("ca. 2 min", "ab 06:00") no longer hold - only Play starts it again.
+    if (Status.data?.stopped && (a.status === "queued" || a.status === "held")) return "nach Play";
     if (a.status === "queued") return a.eta ? `(${etaText(a.eta)})` : "";
     if (a.status === "held") return a.eta ? `ab ${fmtWhen(a.eta)}` : "zum Sendebeginn";
     return ACTION_STATE[a.status] || "";
@@ -115,6 +117,7 @@
         if (dispatch && dispatch.enabled === false) {
           return { text: "Die Leitstelle ist ausgeschaltet – dein Zwischenruf wartet.", kind: "warn" };
         }
+        if (Status.data?.stopped) return { text: "Sender gestoppt – dein Zwischenruf wartet auf Play.", kind: "warn" };
         const since = toDate(c.submitted_at || c.created_at);
         const slow = since && (serverNow() - since.getTime()) / 1000 > SLOW_AFTER_SECONDS;
         return slow ? { text: "Leitstelle sortiert noch ein – dauert länger als sonst", kind: "warn" } : { text: "Leitstelle sortiert ein…", kind: "busy" };
@@ -124,6 +127,7 @@
       case "queued": {
         const states = new Set((c.actions || []).filter((a) => a.queue_item_id).map((a) => a.status));
         if (states.has("playing")) return { text: "läuft jetzt", kind: "live" };
+        if (Status.data?.stopped) return { text: "Sender gestoppt – kommt nach Play dran", kind: "held" };
         if (states.has("held")) return { text: c.status_text, kind: "held" };
         return { text: "eingeplant", kind: "busy" };
       }

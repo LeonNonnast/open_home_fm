@@ -104,6 +104,7 @@ def stop_station(request: Request) -> dict:
 @player_router.post("/play")
 def play_station(request: Request) -> dict:
     set_stopped(False)
+    request.app.state.player.resume()  # starts at once, also out of a circuit-breaker pause
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler is not None:
         scheduler.wake()  # the music desk plans right away, not only at the next watcher tick

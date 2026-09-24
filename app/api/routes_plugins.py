@@ -4,7 +4,7 @@ import yaml
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.config import ROOT_DIR, load_config, save_config
+from app.config import ROOT_DIR, config_lock, load_config, save_config
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
@@ -43,15 +43,16 @@ def list_plugins() -> dict:
 
 @router.post("/{name}/toggle")
 def toggle_plugin(name: str, body: ToggleBody) -> dict:
-    config = load_config()
-    plugins_cfg = config.setdefault("plugins", {})
-    disabled = set(plugins_cfg.get("disabled", []))
+    with config_lock():  # read-modify-write: nothing (e.g. Stop) saved in between gets lost
+        config = load_config()
+        plugins_cfg = config.setdefault("plugins", {})
+        disabled = set(plugins_cfg.get("disabled", []))
 
-    if body.enabled:
-        disabled.discard(name)
-    else:
-        disabled.add(name)
+        if body.enabled:
+            disabled.discard(name)
+        else:
+            disabled.add(name)
 
-    plugins_cfg["disabled"] = sorted(disabled)
-    save_config(config)
+        plugins_cfg["disabled"] = sorted(disabled)
+        save_config(config)
     return {"status": "ok"}

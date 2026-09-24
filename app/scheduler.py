@@ -49,6 +49,7 @@ class DeskScheduler:
         self._scheduler = BackgroundScheduler()
         self._heartbeat_job = None
         self._watch_job = None
+        self._calls_job = None
         self._was_on_air: bool | None = None
         self._was_stopped = False
         self._news_jobs: list = []
@@ -60,8 +61,8 @@ class DeskScheduler:
                                                   next_run_time=datetime.now(), max_instances=1, coalesce=True)
         self._heartbeat_job = self._scheduler.add_job(self.heartbeat, "interval", minutes=HEARTBEAT_MINUTES,
                                                       max_instances=1, coalesce=True)
-        self._scheduler.add_job(self.watch_calls, "interval", seconds=CALLS_WATCH_SECONDS,
-                                next_run_time=datetime.now(), max_instances=1, coalesce=True)
+        self._calls_job = self._scheduler.add_job(self.watch_calls, "interval", seconds=CALLS_WATCH_SECONDS,
+                                                  next_run_time=datetime.now(), max_instances=1, coalesce=True)
         self.plan_news_jobs()
         self._scheduler.start()
         logger.info("Desk scheduler started (fill watcher every %ds, heartbeat every %d min, calls every %ds)",
@@ -71,12 +72,14 @@ class DeskScheduler:
         self._scheduler.shutdown(wait=False)
 
     def wake(self) -> None:
-        """Runs the fill watcher now instead of in up to 30 s (Play: the music desk starts at once)."""
-        try:
-            if self._watch_job is not None:
-                self._watch_job.modify(next_run_time=datetime.now())
-        except Exception:
-            logger.warning("Could not wake the fill watcher", exc_info=True)
+        """Runs the fill and calls watchers now instead of in up to 30/10 s (Play: the music desk
+        plans and waiting calls go to the dispatch desk at once)."""
+        for job in (self._watch_job, self._calls_job):
+            try:
+                if job is not None:
+                    job.modify(next_run_time=datetime.now())
+            except Exception:
+                logger.warning("Could not wake a watcher", exc_info=True)
 
     # ---------- music desk conditions ----------
 

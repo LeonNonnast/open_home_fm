@@ -400,7 +400,6 @@
       setTimeout(() => Status.refresh(), 1500);
     });
 
-
     $("skip").addEventListener("click", async () => {
       const np = Status.data?.now_playing;
       if (!np) return;

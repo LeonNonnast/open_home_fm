@@ -294,14 +294,17 @@ class ProgramQueue:
             if cursor and cursor.get("item_id") == item_id:
                 self.cursor_path.unlink(missing_ok=True)
 
-    def expire_lanes(self, lanes: tuple[str, ...], note: str) -> int:
-        """Expires all active items of `lanes` (e.g. at the end of the broadcast window)."""
+    def expire_lanes(self, lanes: tuple[str, ...], note: str, created_before: datetime | None = None) -> int:
+        """Expires all active items of `lanes` (e.g. at the end of the broadcast window) - with
+        `created_before` only those created before then."""
         now = _now()
         count = 0
         with self._lock:
             items = self._load()
             for item in items:
-                if item.lane in lanes and item.status in ACTIVE_STATUSES:
+                if item.lane in lanes and item.status in ACTIVE_STATUSES and (
+                    created_before is None or (_parse(item.created_at) or now) < created_before
+                ):
                     self._set_status(item, "expired", now, note=note)
                     count += 1
             if count:

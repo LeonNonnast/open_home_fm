@@ -115,6 +115,12 @@ def write_user_config(overrides: dict[str, Any]) -> None:
         _cache = None
 
 
+def config_lock() -> threading.RLock:
+    """For a read-modify-write of the whole config outside update_config() (e.g. a stale copy
+    from the UI checked against the stored one): nothing, e.g. Stop, can be saved in between."""
+    return _lock
+
+
 def save_config(config: dict[str, Any]) -> None:
     """Stores a complete config - only its difference from the defaults ends up on disk."""
     with _lock:
