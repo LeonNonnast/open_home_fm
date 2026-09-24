@@ -155,6 +155,9 @@ class SpotifyMusicProvider(MusicProvider):
     # Playback-state poll interval: tight enough to notice a song ending early, loose enough to
     # stay far away from the Web API rate limits. A stop request doesn't wait for it.
     POLL_SECONDS = 5
+    # A failing status poll (network blip, 5xx/429, token refresh) doesn't end the song: keep
+    # waiting until the nominal end, give up only after this many failed polls in a row (~30 s).
+    MAX_POLL_ERRORS = 6
 
     def play_until(self, track: Track, stop_event: threading.Event, device: Device | None = None) -> PlaybackResult:
         self.play(track, device)
@@ -162,6 +165,7 @@ class SpotifyMusicProvider(MusicProvider):
         duration = track.duration_seconds or 180.0
         deadline = started + duration + 2
         position = 0.0
+        poll_errors = 0
         # Poll playback state so we notice early skips/failures instead of always sleeping the
         # full nominal duration.
         while time.monotonic() < deadline:
@@ -171,7 +175,18 @@ class SpotifyMusicProvider(MusicProvider):
                 except Exception:
                     logger.warning("Could not pause Spotify playback", exc_info=True)
                 return PlaybackResult(finished=False, position_seconds=time.monotonic() - started)
-            state = self.sp.current_playback()
+            try:
+                state = self.sp.current_playback()
+            except Exception as exc:
+                poll_errors += 1
+                if poll_errors >= self.MAX_POLL_ERRORS:
+                    logger.error("Spotify playback state unavailable %d times in a row, giving up on '%s': %s",
+                                 poll_errors, track.title, exc)
+                    break
+                logger.warning("Could not read Spotify playback state (%d/%d): %s",
+                               poll_errors, self.MAX_POLL_ERRORS, exc)
+                continue
+            poll_errors = 0
             if not state or not state.get("is_playing"):
                 break
             if (state.get("item") or {}).get("uri") != track.uri:

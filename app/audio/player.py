@@ -32,10 +32,11 @@ logger = logging.getLogger(__name__)
 RECORD_AFTER_SECONDS = 30
 # Circuit breaker: this many segments in a row ending after less than SHORT_SEGMENT_SECONDS
 # (e.g. the Spotify device vanished and every play returns after one poll) pause the player
-# for BREAKER_PAUSE_SECONDS instead of draining the queue within seconds.
+# instead of draining the queue within seconds. The failed program segments are put back
+# (not consumed), and each further trip without a successful segment in between pauses longer.
 BREAKER_SEGMENTS = 3
 SHORT_SEGMENT_SECONDS = 10
-BREAKER_PAUSE_SECONDS = 60
+BREAKER_PAUSES = (60, 300, 900)
 LOG_LINES = 12
 
 MODE_TEXTS = {
@@ -65,7 +66,7 @@ class QueuePlayer:
         idle_poll_seconds: float = 2.0,
         jingle_player_binary: str = "ffplay",
         jingle_player: JinglePlayer | None = None,
-        breaker_pause_seconds: float = BREAKER_PAUSE_SECONDS,
+        breaker_pauses: tuple[float, ...] = BREAKER_PAUSES,
     ):
         self.provider = provider
         self.queue = queue
@@ -73,7 +74,7 @@ class QueuePlayer:
         self.idle_poll_seconds = idle_poll_seconds
         self.jingle_player_binary = jingle_player_binary
         self._jingle_player = jingle_player or self._play_jingle_ffplay
-        self.breaker_pause_seconds = breaker_pause_seconds
+        self.breaker_pauses = breaker_pauses
         self.filler = FillerSource(provider, queue, reserve_path or Path("data/reserve.json"), play_history_path)
 
         self._stop_event = threading.Event()
@@ -85,7 +86,9 @@ class QueuePlayer:
         self._mode_text = MODE_TEXTS["starting"]
         self._notice: str | None = None
         self._log: deque[str] = deque(maxlen=LOG_LINES)
-        self._short_in_a_row = 0
+        self._short_streak: list[tuple[str, str, int]] = []  # (item id, lane, index) of failed segments
+        self._breaker_trips = 0
+        self._breaker_active = False  # tripped, and no segment played properly since
         self._was_on_air: bool | None = None
 
     # ---------- lifecycle ----------
@@ -107,12 +110,19 @@ class QueuePlayer:
 
     def skip(self) -> bool:
         """Ends the current segment early; False when nothing is playing."""
+        # Set under the lock that also guards the segment boundary: a skip can't land on the
+        # next segment after the current one ended on its own.
         with self._state_lock:
             if self._current is None:
                 return False
+            self._skip_event.set()
         self._log_line("Überspringen angefordert")
-        self._skip_event.set()
         return True
+
+    def breaker_active(self) -> bool:
+        """True from a circuit-breaker trip until a segment plays properly again - the fill
+        watcher doesn't start LLM runs for a program that can't be played anyway."""
+        return self._breaker_active
 
     # ---------- status ----------
 
@@ -192,9 +202,12 @@ class QueuePlayer:
         if index >= len(item.segments):
             self.queue.finish_item(item.id)
             return
-        self._play_segment(item, index)
+        outcome = self._play_segment(item, index)
+        if outcome is None:  # removed/expired meanwhile
+            return
         if index == len(item.segments) - 1:
             self.queue.finish_item(item.id)
+        self._check_breaker(item, index, *outcome)
 
     def _make_filler(self, config: dict) -> QueueItem | None:
         picked = self.filler.next_segment(config)
@@ -216,12 +229,18 @@ class QueuePlayer:
         self._log_line(f"{text}: {segment.title}")
         return self.queue.append(QueueItem.new("filler", "filler", [segment]))
 
-    def _play_segment(self, item: QueueItem, index: int) -> None:
+    def _play_segment(self, item: QueueItem, index: int) -> tuple[float, bool, bool] | None:
+        """Plays one segment; (elapsed, stopped by skip/stop, raised) or None if the item is gone."""
         segment = item.segments[index]
-        self.queue.start_segment(item.id, index)
-        self._skip_event.clear()
+        if not self.queue.start_segment(item.id, index):
+            self._log_line(f"nicht mehr eingeplant, ausgelassen: {segment.title}")
+            return None
         started = time.time()
         with self._state_lock:
+            # Cleared together with setting _current (see skip()); a pending stop still wins.
+            self._skip_event.clear()
+            if self._stop_event.is_set():
+                self._skip_event.set()
             self._current = {
                 "item_id": item.id,
                 "lane": item.lane,
@@ -245,6 +264,7 @@ class QueuePlayer:
             record_timer.start()
 
         stopped = False
+        error = False
         try:
             if segment.type == "track":
                 result = self.provider.play_until(self._track(segment), self._skip_event)
@@ -255,6 +275,7 @@ class QueuePlayer:
             else:
                 logger.warning("Unknown segment type '%s', skipping", segment.type)
         except Exception:
+            error = True
             logger.exception("Failed to play segment %d of %s, skipping", index, item.id)
         finally:
             elapsed = time.time() - started
@@ -265,29 +286,44 @@ class QueuePlayer:
 
         if stopped and not self._stop_event.is_set():
             self._log_line(f"übersprungen: {segment.title}")
-        self._check_breaker(segment, elapsed, user_stopped=stopped)
+        return elapsed, stopped, error
 
-    def _check_breaker(self, segment: Segment, elapsed: float, user_stopped: bool) -> None:
+    def _check_breaker(self, item: QueueItem, index: int, elapsed: float, user_stopped: bool, error: bool) -> None:
+        segment = item.segments[index]
         # Short jingles are fine - only segments that end far before their expected length count.
         expected = segment.duration_seconds or (segment.estimated_seconds() if segment.type == "track" else 0)
-        too_short = not user_stopped and elapsed < SHORT_SEGMENT_SECONDS and elapsed < expected * 0.5
-        if not too_short:
-            self._short_in_a_row = 0
+        failed = not user_stopped and elapsed < SHORT_SEGMENT_SECONDS and (error or elapsed < expected * 0.5)
+        if not failed:
+            self._short_streak.clear()
+            self._breaker_trips = 0
+            self._breaker_active = False
             if self._notice:
                 with self._state_lock:
                     self._notice = None
             return
-        self._short_in_a_row += 1
-        if self._short_in_a_row < BREAKER_SEGMENTS:
+        if segment.type == "track":
+            # Never in the play history (< 30 s) - without this the filler picks it again and again.
+            self.filler.report_failure(segment.audio_ref)
+        self._short_streak.append((item.id, item.lane, index))
+        if len(self._short_streak) < BREAKER_SEGMENTS:
             return
-        self._short_in_a_row = 0
+        # Most likely the source is down, not the songs: put the program segments back. Filler
+        # items aren't - the filler picks a fresh (not just failed) song next time anyway.
+        rewound = 0
+        for item_id, lane, seg_index in reversed(self._short_streak):
+            if lane != "filler" and self.queue.rewind(item_id, seg_index):
+                rewound += 1
+        self._short_streak.clear()
+        pause = self.breaker_pauses[min(self._breaker_trips, len(self.breaker_pauses) - 1)]
+        self._breaker_trips += 1
+        self._breaker_active = True
         text = "pausiert: Wiedergabe bricht sofort ab – Musikquelle/Spotify-Gerät nicht erreichbar?"
         with self._state_lock:
             self._notice = text
         self._set_mode("paused", text)
         self._log_line(f"Schutzschalter: {BREAKER_SEGMENTS} Segmente in Folge nach < {SHORT_SEGMENT_SECONDS} s beendet, "
-                       f"Pause {self.breaker_pause_seconds:.0f} s")
-        self._stop_event.wait(self.breaker_pause_seconds)
+                       f"Pause {pause:.0f} s{f', {rewound} Segment(e) bleiben eingeplant' if rewound else ''}")
+        self._stop_event.wait(pause)
 
     @staticmethod
     def _track(segment: Segment) -> Track:

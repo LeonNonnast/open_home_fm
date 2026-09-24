@@ -127,3 +127,46 @@ def test_update_reserve(tmp_path: Path, fake_tts):
     assert "1 Songs gespeichert" in result and "B - X" in result
     data = json.loads((tmp_path / "reserve.json").read_text(encoding="utf-8"))
     assert [t["uri"] for t in data["tracks"]] == ["u:a"]
+
+
+def test_tolerates_json_strings_single_dicts_and_bad_segments(tmp_path: Path, fake_tts):
+    provider = FakeMusicProvider([track(f"Song {i}", "Artist") for i in range(4)])
+    append, queue, tools = _append(tmp_path, provider, fake_tts, songs_per_announcement=1)
+
+    # Ollama quirk: the array as a JSON string.
+    result = append(json.dumps([{"type": "jingle", "text": "Hallo"}, {"type": "track", "query": "Song 0"}]))
+    assert "angehängt" in result and [s.type for s in _program_segments(queue)] == ["jingle", "track"]
+
+    # A single object instead of an array.
+    append({"type": "track", "query": "Song 1"})
+    assert [s.title for s in _program_segments(queue)][-1] == "Song 1 - Artist"
+
+    # A non-string type (inferred from its query), a non-object and an unknown type without
+    # content cost only their own segment - the announcement already rendered stays in the block.
+    result = append([{"type": "jingle", "text": "Weiter"}, {"type": 7, "query": "Song 2"}, "kaputt",
+                     {"type": "podcast"}, {"type": "track", "query": "Song 3"}])
+    titles = [s.title for s in _program_segments(queue)]
+    assert "Weiter" in titles and "Song 2 - Artist" in titles and "Song 3 - Artist" in titles
+    assert "Ignorierte Segmente" in result and "#3" in result and "podcast" in result
+
+    assert "Kein Block angehängt" in append("kein json")
+
+    # A segment whose lookup raises is skipped, the rest of the block (and its TTS) survives.
+    search = provider.search_tracks
+    provider.search_tracks = lambda q, limit=10: (_ for _ in ()).throw(RuntimeError("503")) if q == "boom" else search(q, limit)
+    provider.tracks.append(track("Song 4", "Artist"))
+    result = append([{"type": "jingle", "text": "Jetzt"}, {"query": "boom"}, {"query": "Song 4"}])
+    assert "angehängt" in result and "503" in result
+    assert [s.title for s in _program_segments(queue)][-2:] == ["Jetzt", "Song 4 - Artist"]
+
+    # update_reserve: JSON string and a single search text.
+    update = _tool(tools, "update_reserve").func
+    assert "2 Songs" in update(json.dumps([{"query": "Song 0"}, {"query": "Song 1"}]))
+    assert "1 Songs" in update("Song 2")
+
+
+def test_set_playback_script_is_an_alias(tmp_path: Path, fake_tts):
+    provider = FakeMusicProvider([track("Song 0", "Artist")])
+    _, queue, tools = _append(tmp_path, provider, fake_tts)
+    result = _tool(tools, "set_playback_script").func(segments=[{"type": "track", "query": "Song 0"}])
+    assert "angehängt" in result and [s.title for s in _program_segments(queue)] == ["Song 0 - Artist"]

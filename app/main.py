@@ -25,7 +25,7 @@ from app.api.routes_voice import router as voice_router
 from app.audio.player import QueuePlayer
 from app.audio.stt import create_stt_engine
 from app.config import DATA_DIR, ROOT_DIR, load_config
-from app.migrate import migrate_agent_settings, migrate_user_data
+from app.migrate import migrate_agent_settings, migrate_user_data, outdated_prompt_notice
 from app.music import create_music_provider
 from app.program.queue import ProgramQueue
 from app.scheduler import DeskScheduler
@@ -51,6 +51,9 @@ async def lifespan(app: FastAPI):
             })
     except Exception:
         logger.exception("Migrating agent settings to desks.music failed")
+    prompt_notice = outdated_prompt_notice("music")
+    if prompt_notice:
+        notices.append(prompt_notice)
     config = load_config()
 
     queue = ProgramQueue(DATA_DIR / "queue.json", DATA_DIR / "player_cursor.json")

@@ -100,3 +100,26 @@ def test_playlists_unreachable_source_is_no_500(client, monkeypatch):
     monkeypatch.setattr(routes_music, "create_music_provider", broken)
     data = client.get("/api/music/playlists").json()
     assert data["playlists"] == [] and data["error"] == "Spotify nicht angemeldet"
+
+
+def test_desk_patch_validates(client):
+    for bad in ({"fill_threshold_minutes": ""}, {"fill_threshold_minutes": None}, {"block_minutes": 0},
+                {"fill_threshold_minutes": 50, "max_queued_program_minutes": 45}, {"nonsense": 1}):
+        assert client.patch("/api/desks/music", json=bad).status_code == 422, bad
+    assert client.get("/api/desks/music").json()["settings"]["fill_threshold_minutes"] == 10
+
+    data = client.patch("/api/desks/music", json={"fill_threshold_minutes": 15, "enabled": True}).json()
+    assert data["settings"]["fill_threshold_minutes"] == 15
+    # Only valid against the stored cap: 45.
+    assert client.patch("/api/desks/music", json={"max_queued_program_minutes": 15}).status_code == 422
+
+
+def test_switching_the_music_source_drops_its_planned_songs(client):
+    from app.program.queue import QueueItem, Segment
+
+    queue = client.app.state.queue
+    item = queue.append(QueueItem.new("program", "music", [Segment("track", "x", "/m/x.mp3", provider="local")]))
+    client.patch("/api/config", json={"music": {"provider": "spotify"}})
+    assert queue.get(item.id).status == "expired"
+    notices = client.get("/api/status").json()["notices"]
+    assert any("Neustart des Dienstes nötig" in n["text"] for n in notices)

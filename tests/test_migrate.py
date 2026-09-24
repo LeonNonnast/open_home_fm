@@ -108,3 +108,14 @@ def test_agent_settings_move_to_music_desk(config_env: Path):
     }
     assert "agent.loop_interval_seconds entfernt" in changes and not script.exists()
     assert migrate_agent_settings(config_env) == []
+
+
+def test_outdated_prompt_notice(config_env: Path):
+    from app.migrate import outdated_prompt_notice
+
+    assert outdated_prompt_notice("music") is None  # default prompt
+    cfg.save_system_prompt("Rufe am Ende set_playback_script auf.", desk="music")
+    notice = outdated_prompt_notice("music")
+    assert notice and "Prompt auf Standard zurücksetzen" in notice["text"]
+    cfg.save_system_prompt("Rufe append_program_block auf.", desk="music")
+    assert outdated_prompt_notice("music") is None

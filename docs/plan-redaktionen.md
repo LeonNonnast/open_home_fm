@@ -124,7 +124,9 @@ class QueueItem:
   - Grundlage für „Song überspringen“ (Phase 1) und Preempt (Phase 4).
 - **Schutzschalter**: enden 3 Segmente in Folge nach < 10 s (z.B. Spotify-Gerät weg ⇒
   `play_and_wait` bricht nach einem Poll ab und leert sonst die Warteschlange im Sekundentakt),
-  pausiert der Player 60 s, setzt einen Hinweis für die UI und versucht es erneut.
+  pausiert der Player (60 s, dann 5 min, dann 15 min; zurück auf 60 s nach dem ersten gelungenen
+  Segment), setzt einen Hinweis für die UI und versucht es erneut. Die fehlgeschlagenen
+  Programm-Segmente bleiben eingeplant, und der Füllstands-Wächter startet solange keine Läufe.
 - **Spielhistorie**: `record_played` erst nach 30 s Laufzeit (übersprungene Songs zählen nicht
   für die Wiederholungssperre).
 - **Preempt (Phase 4)**: `interrupt=True` setzt das `stop_event` - aber nur, wenn gerade

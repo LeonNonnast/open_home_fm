@@ -7,6 +7,7 @@ agent, not user-extensible - but they use the exact same Tool/ToolRegistry contr
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,19 @@ MAX_RESERVE_TRACKS = 30
 # practice: a model announcing spoken segments as "announcement" instead of "jingle") -
 # tolerate the common synonyms rather than silently dropping the segment.
 JINGLE_TYPE_ALIASES = {"jingle", "announcement", "announce", "tts", "speech", "ansage", "voice"}
+
+
+def _as_list(value: Any) -> list[Any] | None:
+    """An array argument as a list, or None if unusable. Some models (seen with Ollama) send
+    the array as a JSON string, or a single object instead of a one-element array."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        return [value]
+    return value if isinstance(value, list) else None
 
 
 def songs_since_last_announcement(segments: list[Segment]) -> int | None:
@@ -64,8 +78,8 @@ def build_builtin_tools(
     def resolve(raw: dict[str, Any]) -> Track | None:
         # Models sometimes echo the `uri` from an earlier search_songs result instead of
         # restating the search text - try that exact lookup before a fresh text search.
-        uri = raw.get("uri")
-        query = raw.get("query", "")
+        uri = str(raw["uri"]) if raw.get("uri") else None
+        query = str(raw.get("query") or "")
         track = provider.get_track_by_uri(uri) if uri else None
         if track is None:
             candidates = provider.search_tracks(query or uri or "", limit=1)
@@ -108,6 +122,12 @@ def build_builtin_tools(
           {"type": "track", "query": "artist - title"}  (or "uri")
           {"type": "jingle", "text": "kurzer gesprochener Text"}
         """
+        items = _as_list(segments)
+        if items is None:
+            return (
+                "Kein Block angehängt: 'segments' muss eine Liste von Segment-Objekten sein "
+                f"(erhalten: {str(segments)[:80]!r})."
+            )
         # Planned but not yet played counts as much as played: never queue a song twice.
         blocked_uris = set(recent_uris)
         blocked_titles = set(recent_titles)
@@ -129,12 +149,13 @@ def build_builtin_tools(
         skipped_repeats: list[str] = []
         skipped_announcements: list[str] = []
         failed: list[str] = []
+        ignored: list[str] = []
         truncated = 0
         total = 0.0
-        for raw in segments if isinstance(segments, list) else []:
-            if not isinstance(raw, dict):
-                continue
-            seg_type = (raw.get("type") or "").lower()
+
+        def add(raw: dict[str, Any], number: int) -> None:
+            nonlocal since, total, truncated
+            seg_type = str(raw.get("type") or "").strip().lower()
             if seg_type not in {"track", *JINGLE_TYPE_ALIASES}:
                 # Some models drop the `type` field entirely (observed in practice) - infer it
                 # from whichever content field was actually supplied.
@@ -147,35 +168,36 @@ def build_builtin_tools(
                 track = resolve(raw)
                 if track is None:
                     logger.warning("append_program_block: no track resolved for %r, skipping", raw)
-                    failed.append(raw.get("query") or raw.get("uri") or "?")
-                    continue
+                    failed.append(str(raw.get("query") or raw.get("uri") or "?"))
+                    return
                 segment = track_segment(track, provider.name)
                 segment.wish_id = raw.get("wish_id")
                 key = segment.title.casefold()
                 if track.uri in blocked_uris or key in blocked_titles:
                     skipped_repeats.append(segment.title)
-                    continue
+                    return
                 if total + segment.estimated_seconds() > room:
                     truncated += 1
-                    continue
+                    return
                 blocked_uris.add(track.uri)
                 blocked_titles.add(key)
                 resolved.append(segment)
                 total += segment.estimated_seconds()
                 since = None if since is None else since + 1
             elif seg_type in JINGLE_TYPE_ALIASES:
-                text = (raw.get("text") or "").strip()
+                text = str(raw.get("text") or "").strip()
                 if not text:
-                    continue
+                    ignored.append(f"#{number}: Ansage ohne 'text'")
+                    return
                 if since is not None and since < songs_per_announcement:
                     skipped_announcements.append(text[:60])
-                    continue
+                    return
                 try:
                     audio_path = tts_engine.synthesize(text)
                 except Exception as exc:
                     logger.warning("append_program_block: TTS failed for %r: %s", text[:60], exc)
                     failed.append(f"Ansage '{text[:40]}' ({exc})")
-                    continue
+                    return
                 try:
                     duration = PiperTTSEngine.duration_seconds(audio_path)
                 except Exception:
@@ -189,6 +211,18 @@ def build_builtin_tools(
                 since = 0
             else:
                 logger.warning("append_program_block: unknown segment type '%s', skipping", seg_type)
+                ignored.append(f"#{number}: unbekannter Typ '{seg_type[:20]}' (erlaubt: track, jingle)")
+
+        for number, raw in enumerate(items, 1):
+            if not isinstance(raw, dict):
+                ignored.append(f"#{number}: kein Objekt ({str(raw)[:40]!r})")
+                continue
+            # One broken segment must not cost the whole block (incl. announcements already rendered).
+            try:
+                add(raw, number)
+            except Exception as exc:
+                logger.warning("append_program_block: segment %d %r failed, skipping", number, raw, exc_info=True)
+                ignored.append(f"#{number}: Fehler ({exc})")
 
         notes = []
         if skipped_repeats:
@@ -200,6 +234,8 @@ def build_builtin_tools(
             )
         if failed:
             notes.append("Nicht auflösbar: " + "; ".join(failed) + ".")
+        if ignored:
+            notes.append("Ignorierte Segmente: " + "; ".join(ignored) + ".")
         if truncated:
             notes.append(
                 f"{truncated} Song(s) weggelassen: sonst wäre die Obergrenze von {max_queued_program_minutes} "
@@ -227,12 +263,21 @@ def build_builtin_tools(
             )
         return result
 
+    def set_playback_script(segments: Any = None, **kwargs: Any) -> str:
+        # The pre-queue tool name, still in owner-customized prompts: same as append_program_block.
+        if segments is None:
+            segments = kwargs.get("script") or kwargs.get("items") or []
+        return append_program_block(segments)
+
     def update_reserve(tracks: list[Any]) -> str:
         """Replaces the reserve: songs the player falls back on when no program is queued."""
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         skipped: list[str] = []
-        for raw in tracks if isinstance(tracks, list) else []:
+        items = _as_list(tracks)
+        if items is None:
+            items = [tracks] if isinstance(tracks, str) else []  # a single search text
+        for raw in items:
             raw = {"query": raw} if isinstance(raw, str) else raw
             if not isinstance(raw, dict):
                 continue
@@ -335,6 +380,17 @@ def build_builtin_tools(
                 "required": ["segments"],
             },
             func=append_program_block,
+        ),
+        Tool(
+            # Tolerant alias: owner-customized prompts from before the queue still name it.
+            name="set_playback_script",
+            description="Veraltet - wie append_program_block (bitte append_program_block verwenden).",
+            parameters={
+                "type": "object",
+                "properties": {"segments": {"type": "array", "items": {"type": "object"}}},
+                "required": ["segments"],
+            },
+            func=set_playback_script,
         ),
         Tool(
             name="update_reserve",

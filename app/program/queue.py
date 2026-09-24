@@ -226,19 +226,39 @@ class ProgramQueue:
             candidates.sort(key=lambda i: (LANE_PRIORITY.get(i.lane, len(LANES)), i.status != "playing", i.created_at))
             return candidates[0]
 
-    def start_segment(self, item_id: str, index: int) -> None:
+    def start_segment(self, item_id: str, index: int) -> bool:
+        """Marks segment `index` as on air. False (and nothing changed) when the item is no
+        longer active - removed in the UI or expired since `next_item()` - so the player bails out."""
         now = _now()
         with self._lock:
             items = self._load()
-            for item in items:
-                if item.id == item_id:
-                    item.status = "playing"
-                    item.next_segment = index + 1
-                    item.updated_at = now.isoformat()
+            item = next((i for i in items if i.id == item_id), None)
+            if item is None or item.status not in ACTIVE_STATUSES:
+                return False
+            item.status = "playing"
+            item.next_segment = index + 1
+            item.updated_at = now.isoformat()
             self._save(items)
             write_json_atomic(
                 self.cursor_path, {"item_id": item_id, "segment_index": index, "started_at": now.isoformat()}
             )
+            return True
+
+    def rewind(self, item_id: str, index: int) -> bool:
+        """Puts segment `index` back as the next one to play (a segment that failed right away,
+        e.g. during a Spotify outage, isn't consumed). Revives an item the player itself finished,
+        but never one the UI removed or that expired."""
+        now = _now()
+        with self._lock:
+            items = self._load()
+            item = next((i for i in items if i.id == item_id), None)
+            if item is None or item.status not in (*ACTIVE_STATUSES, "played") or item.is_expired(now):
+                return False
+            item.next_segment = min(item.next_segment, index)
+            item.status = "playing" if item.next_segment > 0 else "queued"
+            item.updated_at = now.isoformat()
+            self._save(items)
+            return True
 
     def finish_item(self, item_id: str, status: str = "played", note: str | None = None) -> None:
         with self._lock:
@@ -259,6 +279,24 @@ class ProgramQueue:
             items = self._load()
             for item in items:
                 if item.lane in lanes and item.status in ACTIVE_STATUSES:
+                    self._set_status(item, "expired", now, note=note)
+                    count += 1
+            if count:
+                self._save(items)
+                logger.info("Expired %d queue item(s): %s", count, note)
+        return count
+
+    def expire_other_providers(self, provider: str, note: str, lanes: tuple[str, ...] = ("program", "filler")) -> int:
+        """Expires active items of `lanes` with tracks of another music source than `provider`
+        (their URIs can't be played after switching `music.provider`)."""
+        now = _now()
+        count = 0
+        with self._lock:
+            items = self._load()
+            for item in items:
+                if item.lane not in lanes or item.status not in ACTIVE_STATUSES:
+                    continue
+                if any(s.type == "track" and s.provider and s.provider != provider for s in item.segments):
                     self._set_status(item, "expired", now, note=note)
                     count += 1
             if count:

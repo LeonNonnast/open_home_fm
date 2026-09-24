@@ -115,3 +115,34 @@ def test_backoff_after_failures(runner):
 def test_disabled_desk_is_not_triggered(runner):
     cfg.update_config({"desks": {"music": {"enabled": False}}})
     assert runner.request("music", "fill") == "disabled"
+
+
+def test_fill_watcher_holds_off_while_the_breaker_is_tripped(runner):
+    class TrippedPlayer:
+        def breaker_active(self):
+            return True
+
+        def remaining_program_seconds(self):
+            return 0.0
+
+    runner.player = TrippedPlayer()
+    DeskScheduler(runner).watch()
+    assert not runner.started.wait(0.3) and runner.runs == []
+
+
+def test_bad_stored_desk_settings_fall_back_to_defaults(runner):
+    from app.agent.desk import DeskConfig
+
+    cfg.write_user_config({"desks": {"music": {
+        "fill_threshold_minutes": "", "block_minutes": None, "max_queued_program_minutes": "30",
+        "no_repeat_minutes": -5, "plugins": "get_weather",
+    }}})
+    s = DeskConfig.from_config("music", cfg.load_config()).settings
+    assert (s["fill_threshold_minutes"], s["block_minutes"], s["max_queued_program_minutes"]) == (10, 20, 30)
+    assert s["no_repeat_minutes"] == 120 and isinstance(s["plugins"], list)
+    scheduler = DeskScheduler(runner)
+    assert scheduler.below_threshold()  # no TypeError every 30 s
+
+    cfg.write_user_config({"desks": {"music": {"fill_threshold_minutes": 50, "max_queued_program_minutes": 20}}})
+    s = DeskConfig.from_config("music", cfg.load_config()).settings
+    assert s["fill_threshold_minutes"] < s["max_queued_program_minutes"]

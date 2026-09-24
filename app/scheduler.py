@@ -4,6 +4,7 @@ Music desk:
 - fill-level watcher every 30 s: program left < `fill_threshold_minutes` ⇒ run,
 - heartbeat every 60 min (picks up wishes, refreshes the reserve),
 - right at the broadcast start.
+The fill watcher holds off while the player's circuit breaker is tripped (source unreachable).
 Every trigger respects the broadcast window and `max_queued_program_minutes` - neither the
 watcher nor "run now" stacks the queue beyond that. Locking, follow-up runs and backoff are
 the DeskRunner's job (app/agent/desk.py).
@@ -96,6 +97,9 @@ class DeskScheduler:
                 logger.info("Broadcast start - music desk runs right away")
                 self.request_run("music", "broadcast_start")
                 return
+            player = self.runner.player
+            if player is not None and player.breaker_active():
+                return  # the program can't be played right now - planning more won't help
             if self.below_threshold():
                 # Re-checked before the run and before a follow-up: a block appended meanwhile
                 # makes the queued run unnecessary.

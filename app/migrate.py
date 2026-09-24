@@ -142,6 +142,28 @@ def migrate_agent_settings(root: Path | None = None) -> list[str]:
     return changes
 
 
+# Tools a customized prompt may still name although they were renamed (still work as aliases).
+OUTDATED_TOOL_NAMES = {"set_playback_script": "append_program_block"}
+
+
+def outdated_prompt_notice(desk: str = "music") -> dict | None:
+    """A UI notice when the owner's customized prompt for `desk` still names an old tool."""
+    path = cfg.user_prompt_path(desk)
+    try:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        return None
+    old = [name for name in OUTDATED_TOOL_NAMES if name in text]
+    if not old:
+        return None
+    renamed = ", ".join(f"{name} → {OUTDATED_TOOL_NAMES[name]}" for name in old)
+    return {
+        "id": f"prompt-veraltet-{desk}",
+        "text": f"Dein angepasster Prompt nennt ein umbenanntes Werkzeug ({renamed}). Es funktioniert "
+                "vorerst weiter; besser „Prompt auf Standard zurücksetzen“ und eigene Änderungen neu eintragen.",
+    }
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     for path in migrate_user_data():

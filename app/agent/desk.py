@@ -56,6 +56,50 @@ DESK_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 BACKOFF_SECONDS = {"music": (60, 120, 300, 600)}
+# (min, max) of the numeric desk settings - the API rejects values outside, from_config falls
+# back to the default for a bad value already on disk (hand edit, older version).
+SETTING_BOUNDS: dict[str, tuple[int, int]] = {
+    "fill_threshold_minutes": (1, 240),
+    "block_minutes": (1, 240),
+    "max_queued_program_minutes": (2, 480),
+    "songs_per_announcement": (1, 50),
+    "no_repeat_minutes": (0, 10080),
+    "max_tool_iterations": (1, 200),
+    "history_runs": (0, 50),
+}
+
+
+def _sane_settings(name: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Replaces unusable values (wrong type, out of range) by the defaults, with a warning."""
+    defaults = DESK_DEFAULTS.get(name, {})
+    for key, default in defaults.items():
+        value = settings.get(key)
+        if key in SETTING_BOUNDS:
+            low, high = SETTING_BOUNDS[key]
+            try:
+                number = int(value)
+                ok = low <= number <= high and not isinstance(value, bool)
+            except (TypeError, ValueError):
+                ok = False
+            if ok:
+                settings[key] = number
+                continue
+        elif isinstance(default, bool):
+            if isinstance(value, bool):
+                continue
+        elif isinstance(default, list):
+            if isinstance(value, list):
+                continue
+        else:
+            continue
+        logger.warning("desks.%s.%s = %r is not usable, using the default %r", name, key, value, default)
+        settings[key] = default
+    if "fill_threshold_minutes" in defaults and settings["fill_threshold_minutes"] >= settings["max_queued_program_minutes"]:
+        logger.warning("desks.%s: fill_threshold_minutes must be below max_queued_program_minutes, using the defaults", name)
+        settings["fill_threshold_minutes"] = defaults["fill_threshold_minutes"]
+        settings["max_queued_program_minutes"] = max(defaults["max_queued_program_minutes"],
+                                                     settings["max_queued_program_minutes"])
+    return settings
 
 #  datetime.strftime("%A") depends on the system locale, which usually isn't set to German
 #  on a fresh Raspberry Pi OS - spelling this out explicitly keeps the weekday name German
@@ -87,7 +131,8 @@ class DeskConfig:
 
     @classmethod
     def from_config(cls, name: str, config: dict[str, Any]) -> "DeskConfig":
-        settings = {**DESK_DEFAULTS.get(name, {}), **(config.get("desks", {}).get(name) or {})}
+        stored = (config.get("desks") or {}).get(name)
+        settings = _sane_settings(name, {**DESK_DEFAULTS.get(name, {}), **(stored if isinstance(stored, dict) else {})})
         return cls(
             name=name,
             enabled=bool(settings.get("enabled", True)),

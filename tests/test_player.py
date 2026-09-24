@@ -11,6 +11,7 @@ import app.audio.player as player_module
 from app import config as cfg
 from app.agent.play_history import record_played
 from app.audio.player import QueuePlayer
+from app.music.base import PlaybackResult
 from app.program.filler import FillerSource
 from app.program.queue import ProgramQueue, QueueItem, Segment
 from tests.conftest import FakeMusicProvider, track
@@ -70,7 +71,7 @@ def test_skip_stops_the_song_and_moves_on(config_env, queue):
 def test_circuit_breaker_pauses_after_three_short_segments(config_env, queue):
     provider = FakeMusicProvider()  # every play "ends" at once, like a vanished Spotify device
     queue.append(_block(*"abcdef"))
-    player = _player(config_env, provider, queue, breaker_pause_seconds=60)
+    player = _player(config_env, provider, queue, breaker_pauses=(60,))
     player.start()
     try:
         assert wait_for(lambda: player.status()["mode"] == "paused")
@@ -147,3 +148,102 @@ def test_filler_selection_order(config_env, queue):
     record_played(history, "u:f2", "F2 - X")
     segment, source = filler.next_segment(config)
     assert source == "library" and segment.audio_ref in {"u:f1", "u:f2"}
+
+
+class FailingProvider(FakeMusicProvider):
+    """Raises for the uris in `bad` (Spotify 403 / region lock); blocks like a long song otherwise."""
+
+    def __init__(self, *args, bad: set[str], **kwargs):
+        super().__init__(*args, block=True, **kwargs)
+        self.bad = bad
+
+    def play_until(self, track, stop_event, device=None):
+        if track.uri in self.bad:
+            self.played.append(track)
+            raise RuntimeError("403 Forbidden")
+        return super().play_until(track, stop_event, device)
+
+
+def test_unplayable_filler_track_is_not_retried(config_env, queue):
+    (config_env / "data" / "reserve.json").write_text(json.dumps({"tracks": [
+        {"uri": "u:bad", "title": "Bad", "duration_seconds": 200},
+        {"uri": "u:good", "title": "Good", "duration_seconds": 200},
+    ]}), encoding="utf-8")
+    provider = FailingProvider(bad={"u:bad"})
+    player = _player(config_env, provider, queue)
+    player.start()
+    try:
+        assert wait_for(lambda: provider.playing.is_set())
+        assert player.status()["current"]["title"] == "Good"
+        player.skip()  # "Good" ends after < 30 s: not in the history, so it may come again - "Bad" may not
+        assert wait_for(lambda: len(provider.played) >= 3 and provider.playing.is_set())
+    finally:
+        player.stop()
+    assert [t.uri for t in provider.played].count("u:bad") == 1
+    assert player.status()["mode"] != "paused"
+
+
+def test_filler_rotates_reserve_and_skips_failed(config_env, queue):
+    reserve = config_env / "data" / "reserve.json"
+    reserve.write_text(json.dumps({"tracks": [
+        {"uri": "u:r1", "title": "R1"}, {"uri": "u:r2", "title": "R2"}, {"uri": "u:r3", "title": "R3"},
+    ]}), encoding="utf-8")
+    filler = FillerSource(FakeMusicProvider(), queue, reserve, config_env / "data" / "history.json")
+    config = cfg.load_config()
+    assert [filler.next_segment(config)[0].audio_ref for _ in range(4)] == ["u:r1", "u:r2", "u:r3", "u:r1"]
+    for uri in ("u:r1", "u:r2", "u:r3"):
+        filler.report_failure(uri)
+    # Fallback source: everything else failed too - nothing beats a dead track loop.
+    provider = FakeMusicProvider([track("F", "X", uri="u:f")], library=True)
+    filler.provider = provider
+    assert filler.next_segment(config)[0].audio_ref == "u:f"
+    filler.report_failure("u:f")
+    assert filler.next_segment(config) is None
+
+
+def test_breaker_rewinds_program_and_pauses_longer_each_time(config_env, queue):
+    provider = FakeMusicProvider()  # every play "ends" at once
+    block = queue.append(_block(*"abcdef"))
+    player = _player(config_env, provider, queue, breaker_pauses=(0.05, 60))
+    player.start()
+    try:
+        assert wait_for(lambda: any("Pause 60 s" in line for line in player.status()["log"]))
+        time.sleep(0.2)
+        assert player.breaker_active()
+    finally:
+        player.stop()
+    # The failed segments were retried after the first pause, and aren't consumed after the second.
+    assert [t.title for t in provider.played] == ["a", "b", "c", "a", "b", "c"]
+    assert queue.get(block.id).next_segment == 0 and queue.get(block.id).status == "queued"
+
+
+def test_skip_between_segments_does_not_hit_the_next_one(config_env, queue):
+    class SlowThenBlocking(FakeMusicProvider):
+        def play_until(self, track, stop_event, device=None):
+            if track.title == "a":  # ends on its own while the skip request is under way
+                self.played.append(track)
+                time.sleep(0.3)
+                return PlaybackResult(finished=True, position_seconds=0.3)
+            return super().play_until(track, stop_event, device)
+
+    provider = SlowThenBlocking(block=True)
+    queue.append(_block("a", "b"))
+    player = _player(config_env, provider, queue)
+    original_log = player._log_line
+
+    def slow_log(text):
+        if text == "Überspringen angefordert":  # the old code set the event only after this
+            wait_for(lambda: provider.playing.is_set(), timeout=1)
+        original_log(text)
+
+    player._log_line = slow_log
+    player.start()
+    try:
+        assert wait_for(lambda: player.status()["current"] is not None)
+        time.sleep(0.1)
+        assert player.skip()
+        assert wait_for(lambda: provider.playing.is_set())
+        time.sleep(0.2)
+        assert provider.playing.is_set() and player.status()["current"]["title"] == "b"
+    finally:
+        player.stop()

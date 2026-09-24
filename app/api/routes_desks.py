@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.desk import DESKS, DeskConfig
+from app.agent.desk import DESKS, SETTING_BOUNDS, DeskConfig
 from app.config import (
     is_prompt_customized,
     load_config,
@@ -21,6 +21,30 @@ router = APIRouter(prefix="/api/desks", tags=["desks"])
 
 class PromptBody(BaseModel):
     text: str
+
+
+def _bounded(key: str):
+    low, high = SETTING_BOUNDS[key]
+    # Default None = "not sent" (dropped via exclude_unset); an explicit null/"" is a 422.
+    return Field(None, ge=low, le=high)
+
+
+class DeskSettingsPatch(BaseModel):
+    """What PATCH /api/desks/{name} accepts; anything else is a 422 instead of a stored value
+    that breaks every later run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = None
+    fill_threshold_minutes: int = _bounded("fill_threshold_minutes")
+    block_minutes: int = _bounded("block_minutes")
+    max_queued_program_minutes: int = _bounded("max_queued_program_minutes")
+    songs_per_announcement: int = _bounded("songs_per_announcement")
+    no_repeat_minutes: int = _bounded("no_repeat_minutes")
+    max_tool_iterations: int = _bounded("max_tool_iterations")
+    history_runs: int = _bounded("history_runs")
+    plugins: list[str] = None
+    context_plugins: list[str] = None
 
 
 def _checked(name: str) -> str:
@@ -50,9 +74,17 @@ def get_desk(name: str, request: Request) -> dict:
 
 
 @router.patch("/{name}")
-def patch_desk(name: str, partial: dict, request: Request) -> dict:
+def patch_desk(name: str, partial: DeskSettingsPatch, request: Request) -> dict:
     """Deep-merges `partial` into desks.<name> of the user config."""
-    update_config({"desks": {_checked(name): partial}})
+    values = partial.model_dump(exclude_unset=True)
+    merged = {**DeskConfig.from_config(_checked(name), load_config()).settings, **values}
+    if merged.get("fill_threshold_minutes", 0) >= merged.get("max_queued_program_minutes", float("inf")):
+        raise HTTPException(
+            status_code=422,
+            detail="„Nachplanen unter“ muss kleiner sein als „Höchstens eingeplant“ (fill_threshold_minutes "
+                   "< max_queued_program_minutes).",
+        )
+    update_config({"desks": {name: values}})
     return _desk_view(request, name)
 
 

@@ -116,3 +116,40 @@ def test_remove_and_restore(tmp_path):
 def test_corrupt_file_starts_empty(tmp_path):
     (tmp_path / "queue.json").write_text("{kaputt", encoding="utf-8")
     assert _queue(tmp_path).items() == []
+
+
+def test_start_segment_does_not_revive_removed_or_expired_items(tmp_path):
+    q = _queue(tmp_path)
+    removed = q.append(_item("program", _track("a"), _track("b")))
+    assert q.next_item().id == removed.id
+    q.remove(removed.id)  # the UI removes it between next_item() and start_segment()
+    assert q.start_segment(removed.id, 0) is False
+    assert q.get(removed.id).status == "removed" and q.cursor() is None
+
+    expired = q.append(_item("program", _track("c")))
+    q.expire_lanes(("program",), "Sendeschluss")
+    assert q.start_segment(expired.id, 0) is False
+    assert q.get(expired.id).status == "expired"
+
+
+def test_rewind_puts_failed_segments_back_but_not_removed_ones(tmp_path):
+    q = _queue(tmp_path)
+    item = q.append(_item("program", _track("a"), _track("b")))
+    q.start_segment(item.id, 0)
+    q.start_segment(item.id, 1)
+    q.finish_item(item.id)
+    assert q.rewind(item.id, 0)
+    back = q.get(item.id)
+    assert (back.status, back.next_segment) == ("queued", 0)
+    q.remove(item.id)
+    assert not q.rewind(item.id, 0) and q.get(item.id).status == "removed"
+
+
+def test_expire_other_providers(tmp_path):
+    q = _queue(tmp_path)
+    spotify = q.append(_item("program", Segment("track", "s", "spotify:track:1", provider="spotify")))
+    local = q.append(_item("filler", Segment("track", "l", "/music/l.mp3", provider="local")))
+    reply = q.append(_item("reply", Segment("jingle", "j", "/tmp/j.wav")))
+    assert q.expire_other_providers("local", "Musikquelle gewechselt") == 1
+    assert q.get(spotify.id).status == "expired"
+    assert q.get(local.id).status == "queued" and q.get(reply.id).status == "queued"
