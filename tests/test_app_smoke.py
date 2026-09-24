@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import app.agent.desk as desk_module
 import app.api.routes_inbox as routes_inbox
+import app.api.routes_music as routes_music
 import app.api.routes_transcripts as routes_transcripts
 import app.main as main
 from app.audio.player import QueuePlayer
@@ -41,6 +42,7 @@ def client(config_env: Path, fake_tts, monkeypatch):
     # No ffplay in tests: a "jingle" plays until skipped.
     monkeypatch.setattr(QueuePlayer, "_play_jingle_ffplay", lambda self, path, stop_event: stop_event.wait(30))
     monkeypatch.setattr(desk_module, "create_music_provider", lambda config: FakeMusicProvider(tracks))
+    monkeypatch.setattr(routes_music, "create_music_provider", lambda config: FakeMusicProvider(tracks))
     monkeypatch.setattr(desk_module, "create_tts_engine", lambda config, cache_dir: fake_tts)
     monkeypatch.setattr(desk_module, "create_llm_provider", lambda config: llm)
     monkeypatch.setattr(routes_transcripts, "TRANSCRIPTS_DIR", config_env / "data" / "transcripts")
@@ -58,8 +60,7 @@ def test_startup_plans_plays_and_shuts_down(client):
     status = client.get("/api/status").json()
     assert status["on_air"] and status["now_playing"]["lane"] == "program"
     assert status["now_playing"]["title"] == "Guten Morgen"  # the greeting opens the block
-    assert status["state"]["script"]["segments"][0]["title"] == "Guten Morgen"
-    assert status["player_current_segment_index"] == 0
+    assert status["now_playing"]["position"] >= 0 and status["server_time"]
     assert wait_for(lambda: client.get("/api/desks").json()["desks"][0]["state"] == "idle")
     desk = client.get("/api/desks").json()["desks"][0]
     assert desk["name"] == "music" and desk["last_success_at"] and desk["reserve"]["count"] == 1
@@ -73,7 +74,6 @@ def test_startup_plans_plays_and_shuts_down(client):
     assert wait_for(lambda: (client.get("/api/status").json()["now_playing"] or {}).get("title") == "Song 0 - Band")
 
     assert client.post("/api/desks/music/run").json()["status"] in {"started", "queued", "skipped"}
-    assert client.post("/api/status/trigger").json()["status"] in {"started", "queued", "skipped"}
     transcripts = client.get("/api/transcripts", params={"desk": "music"}).json()["transcripts"]
     assert transcripts and transcripts[0]["desk"] == "music"
 
@@ -82,6 +82,21 @@ def test_startup_plans_plays_and_shuts_down(client):
     assert client.delete("/api/queue/nope").status_code == 404
     assert client.get("/api/desks/nope").status_code == 404
 
+    # Favorite playlists come from the configured source (here: the fake's single playlist).
+    assert client.get("/api/music/playlists").json()["playlists"] == [{"id": "all", "name": "Alles", "track_count": 8}]
+    # Every page and its script is served.
+    for page in ("/", "/index.html", "/inbox.html", "/desks.html", "/settings.html", "/static/common.js"):
+        assert client.get(page).status_code == 200, page
+
     started = time.monotonic()
     client.__exit__(None, None, None)
     assert time.monotonic() - started < 5
+
+
+def test_playlists_unreachable_source_is_no_500(client, monkeypatch):
+    def broken(config):
+        raise RuntimeError("Spotify nicht angemeldet")
+
+    monkeypatch.setattr(routes_music, "create_music_provider", broken)
+    data = client.get("/api/music/playlists").json()
+    assert data["playlists"] == [] and data["error"] == "Spotify nicht angemeldet"

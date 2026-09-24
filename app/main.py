@@ -16,6 +16,7 @@ from app.agent.desk import DeskRunner
 from app.api.routes_config import router as config_router
 from app.api.routes_desks import router as desks_router
 from app.api.routes_inbox import router as inbox_router
+from app.api.routes_music import router as music_router
 from app.api.routes_plugins import router as plugins_router
 from app.api.routes_queue import player_router, router as queue_router
 from app.api.routes_status import notices_router, router as status_router
@@ -87,6 +88,7 @@ app = FastAPI(title="open home fm", lifespan=lifespan)
 app.include_router(config_router)
 app.include_router(desks_router)
 app.include_router(inbox_router)
+app.include_router(music_router)
 app.include_router(plugins_router)
 app.include_router(queue_router)
 app.include_router(player_router)

@@ -3,31 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>open home fm · Wünsche</title>
+  <title>open home fm · Rufen</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Chivo+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body data-page="calls">
   <div class="wrap">
     <header class="console">
       <a class="wordmark" href="/index.html">open home<span>.fm</span></a>
       <nav class="tabs" aria-label="Bereiche">
-        <a href="/index.html">Studio</a>
-        <a href="/inbox.html" aria-current="page">Wünsche</a>
+        <a href="/index.html">Sendung</a>
+        <a href="/inbox.html" aria-current="page">Rufen</a>
+        <a href="/desks.html">Redaktion</a>
+        <a href="/settings.html">Technik</a>
       </nav>
-      <div class="lamp" id="lamp" data-state="unknown" role="status">
-        <span class="dot" aria-hidden="true"></span>
-        <span id="lamp-label">…</span>
+      <div class="onair-status">
+        <div class="lamp" id="lamp" data-state="unknown" role="status">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="lamp-label">…</span>
+        </div>
         <span class="clock" id="clock"></span>
       </div>
     </header>
+    <div class="notices" id="notices" aria-live="polite"></div>
 
     <main class="inbox">
       <div class="inbox-intro">
         <h1>Was sollen wir spielen?</h1>
-        <p>Musikwunsch, Gruß oder Nachricht - der Agent baut ihn in den nächsten Sendeablauf ein.</p>
+        <p>Musikwunsch, Gruß oder Nachricht - die Musikredaktion baut ihn ins nächste Programm ein.</p>
       </div>
 
       <section class="card" aria-labelledby="h-voice">
@@ -69,6 +74,7 @@
     </main>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/common.js"></script>
+  <script src="/static/calls.js"></script>
 </body>
 </html>

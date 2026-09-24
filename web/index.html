@@ -3,214 +3,100 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>open home fm · Studio</title>
+  <title>open home fm · Sendung</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Chivo+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body data-page="broadcast">
   <div class="wrap">
     <header class="console">
       <a class="wordmark" href="/index.html">open home<span>.fm</span></a>
       <nav class="tabs" aria-label="Bereiche">
-        <a href="/index.html" aria-current="page">Studio</a>
-        <a href="/inbox.html">Wünsche</a>
+        <a href="/index.html" aria-current="page">Sendung</a>
+        <a href="/inbox.html">Rufen</a>
+        <a href="/desks.html">Redaktion</a>
+        <a href="/settings.html">Technik</a>
       </nav>
-      <div class="lamp" id="lamp" data-state="unknown" role="status">
-        <span class="dot" aria-hidden="true"></span>
-        <span id="lamp-label">…</span>
+      <div class="onair-status">
+        <div class="lamp" id="lamp" data-state="unknown" role="status">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="lamp-label">…</span>
+        </div>
         <span class="clock" id="clock"></span>
       </div>
     </header>
+    <div class="notices" id="notices" aria-live="polite"></div>
 
     <section class="dial" aria-label="Sendeplan heute">
       <div class="dial-track" id="dial-track"></div>
       <div class="dial-caption">
         <span id="dial-window">…</span>
-        <span id="dial-interval"></span>
+        <span id="dial-program"></span>
       </div>
     </section>
 
     <main class="studio">
       <div class="col">
-        <section class="display" aria-labelledby="h-program">
+        <section class="display" id="onair" data-state="idle" aria-labelledby="h-onair">
           <div class="card-head">
-            <h2 id="h-program">Sendeablauf</h2>
-            <span class="meta" id="program-meta"></span>
+            <h2 id="h-onair">Jetzt auf Sendung</h2>
+            <span class="meta" id="onair-mode"></span>
           </div>
-          <blockquote class="moderation" id="moderation" hidden></blockquote>
-          <p class="run-error" id="run-error" hidden></p>
-          <ol class="run-order" id="run-order"></ol>
+          <div class="now-chips" id="now-chips"></div>
+          <p class="now-title" id="now-title">…</p>
+          <blockquote class="moderation" id="now-text" hidden></blockquote>
+          <div id="progress-wrap" hidden>
+            <div class="progress" aria-hidden="true"><div class="bar" id="progress-bar"></div></div>
+            <div class="progress-times">
+              <span id="progress-pos">0:00</span>
+              <span id="progress-dur"></span>
+            </div>
+          </div>
+          <p class="state-line" id="state-line" hidden></p>
           <div class="display-foot">
-            <button class="btn signal" id="trigger-now" type="button">Durchlauf jetzt starten</button>
-            <span class="note" id="trigger-note" role="status"></span>
+            <button class="btn ghost" id="skip" type="button" disabled>Song überspringen</button>
+            <span class="note" id="skip-note" role="status"></span>
           </div>
         </section>
 
-        <section class="card" aria-labelledby="h-prompt">
+        <section class="display" aria-labelledby="h-next">
           <div class="card-head">
-            <h2 id="h-prompt">Systemprompt</h2>
-            <span class="meta" id="prompt-meta"></span>
+            <h2 id="h-next">Als Nächstes</h2>
+            <span class="meta" id="next-meta"></span>
           </div>
-          <label class="label" for="system-prompt" hidden>Systemprompt</label>
-          <textarea id="system-prompt" spellcheck="false" rows="14"></textarea>
-          <div class="card-foot">
-            <button class="btn" id="save-prompt" type="button">Prompt speichern</button>
-            <button class="btn ghost" id="reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
-            <span class="note" id="prompt-note" role="status"></span>
+          <ol class="next-list" id="next-list"></ol>
+          <div class="undo" id="undo" hidden>
+            <span class="text" id="undo-text" role="status"></span>
+            <button class="btn small" id="undo-btn" type="button">Rückgängig</button>
           </div>
-        </section>
-
-        <section class="card" aria-labelledby="h-history">
-          <div class="card-head">
-            <h2 id="h-history">Verlauf</h2>
-            <span class="meta">Die letzten 3 Läufe liest der Agent mit</span>
-          </div>
-          <div class="history" id="history-list"></div>
         </section>
       </div>
 
       <div class="col">
-        <section class="card" aria-labelledby="h-schedule">
+        <section class="card" aria-labelledby="h-desk">
           <div class="card-head">
-            <h2 id="h-schedule">Sendezeiten</h2>
+            <h2 id="h-desk"><a class="link" href="/desks.html#music">Musikredaktion</a></h2>
+            <span class="state-lamp" id="desk-lamp" data-state="idle">
+              <span class="dot" aria-hidden="true"></span><span id="desk-lamp-label">…</span>
+            </span>
           </div>
-          <div class="switch-row">
-            <span class="switch-text" id="schedule-enabled-label">Nur im Sendefenster senden</span>
-            <label class="switch">
-              <input type="checkbox" id="schedule-enabled" aria-labelledby="schedule-enabled-label">
-              <span class="track" aria-hidden="true"></span>
-            </label>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="schedule-start">Sendebeginn</label>
-              <input id="schedule-start" type="time">
-            </div>
-            <div class="field">
-              <label for="schedule-end">Sendeschluss</label>
-              <input id="schedule-end" type="time">
-            </div>
-          </div>
-          <p class="hint">Außerhalb des Fensters ruhen Agent und Wiedergabe. Endet es vor dem Beginn, läuft es über Mitternacht.</p>
-          <div class="card-foot">
-            <button class="btn" id="save-schedule" type="button">Sendezeiten speichern</button>
-            <span class="note" id="schedule-note" role="status"></span>
-          </div>
+          <div id="desk-lines"></div>
         </section>
 
-        <section class="card" aria-labelledby="h-agent">
+        <section class="card" aria-labelledby="h-log">
           <div class="card-head">
-            <h2 id="h-agent">Redaktion</h2>
+            <h2 id="h-log">Sendeprotokoll</h2>
+            <span class="meta">neueste zuerst</span>
           </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="llm-provider">LLM</label>
-              <select id="llm-provider">
-                <option value="ollama">Ollama</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="llm-model">Modell</label>
-              <input id="llm-model" type="text" autocomplete="off">
-            </div>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="music-provider">Musikquelle</label>
-              <select id="music-provider">
-                <option value="local">Lokale Bibliothek</option>
-                <option value="spotify">Spotify</option>
-              </select>
-            </div>
-          </div>
-          <div class="card-foot">
-            <button class="btn" id="save-config" type="button">Speichern</button>
-            <span class="note" id="config-note" role="status"></span>
-          </div>
+          <ol class="log" id="player-log"></ol>
         </section>
-
-        <section class="card" aria-labelledby="h-voice">
-          <div class="card-head">
-            <h2 id="h-voice">Stimme</h2>
-            <span class="meta">Piper · lokal</span>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="voice-model">Stimme</label>
-              <select id="voice-model"></select>
-            </div>
-            <div class="field" id="voice-speaker-field" hidden>
-              <label for="voice-speaker">Sprecher</label>
-              <select id="voice-speaker"></select>
-            </div>
-          </div>
-          <div class="presets" role="group" aria-label="Voreinstellungen">
-            <button class="btn ghost small" type="button" data-preset="neutral">Neutral</button>
-            <button class="btn ghost small" type="button" data-preset="jarvis">Jarvis</button>
-            <button class="btn ghost small" type="button" data-preset="night">Nachtprogramm</button>
-          </div>
-          <div class="field slider">
-            <label for="voice-length">Tempo <output id="voice-length-out" for="voice-length"></output></label>
-            <input id="voice-length" type="range" min="0.7" max="1.5" step="0.05">
-          </div>
-          <div class="field slider">
-            <label for="voice-pitch">Tonhöhe <output id="voice-pitch-out" for="voice-pitch"></output></label>
-            <input id="voice-pitch" type="range" min="-6" max="4" step="0.5">
-          </div>
-          <div class="field slider">
-            <label for="voice-echo">Hall <output id="voice-echo-out" for="voice-echo"></output></label>
-            <input id="voice-echo" type="range" min="0" max="1" step="0.05">
-          </div>
-          <div class="field">
-            <label for="voice-text">Testsatz</label>
-            <textarea id="voice-text" class="short" rows="2">Guten Morgen. Es ist halb sieben, draußen sind es zwölf Grad. Ich habe Ihnen etwas Ruhiges herausgesucht.</textarea>
-          </div>
-          <div class="card-foot">
-            <button class="btn ghost" id="voice-preview" type="button">Hörprobe</button>
-            <button class="btn" id="save-voice" type="button">Speichern</button>
-            <span class="note" id="voice-note" role="status"></span>
-          </div>
-          <details class="voice-more">
-            <summary>Weitere Stimmen laden</summary>
-            <div class="field-row">
-              <div class="field">
-                <label for="voice-catalog">Deutsche Piper-Stimmen</label>
-                <select id="voice-catalog"></select>
-              </div>
-              <div class="field download">
-                <button class="btn ghost" id="voice-download" type="button">Herunterladen</button>
-              </div>
-            </div>
-            <p class="hint">Quelle: rhasspy/piper-voices auf Hugging Face. „high“ klingt am besten, rechnet auf dem Pi aber spürbar länger.</p>
-          </details>
-        </section>
-
-        <section class="card" aria-labelledby="h-plugins">
-          <div class="card-head">
-            <h2 id="h-plugins">Plugins</h2>
-            <span class="meta">./plugins</span>
-          </div>
-          <div class="plugin-list" id="plugin-list"></div>
-        </section>
-
-        <details class="card advanced">
-          <summary>Erweitert</summary>
-          <p class="hint" style="margin-bottom:10px;">Die komplette Konfiguration als JSON. „Speichern“ übernimmt genau diesen Stand – entfernte Schlüssel fallen auf den Standardwert zurück.</p>
-          <label for="raw-config" hidden>Konfiguration als JSON</label>
-          <textarea id="raw-config" class="code" spellcheck="false"></textarea>
-          <div class="card-foot">
-            <button class="btn ghost" id="sync-raw" type="button">In Felder übernehmen</button>
-            <button class="btn" id="save-raw" type="button">Speichern</button>
-            <span class="note" id="raw-note" role="status"></span>
-          </div>
-        </details>
       </div>
     </main>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/common.js"></script>
+  <script src="/static/broadcast.js"></script>
 </body>
 </html>

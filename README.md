@@ -84,7 +84,7 @@ Tool-Nachrichten) unter `data/transcripts/`, je Redaktion (`desk`). Die Redaktio
 jedem neuen Durchlauf automatisch eine kompakte Zusammenfassung ihrer letzten drei Läufe
 (Wünsche, Ansage, eingeplante Segmente) in den Kontext geladen, dazu das Ende der
 Warteschlange, sodass sie das Programm fortsetzt statt es zu wiederholen. Sichtbar über den
-"Verlauf"-Bereich der Web-UI (`GET /api/transcripts?desk=music`).
+Tab „Verlauf“ unter „Redaktion“ in der Web-UI (`GET /api/transcripts?desk=music`).
 
 ## Setup (Raspberry Pi)
 
@@ -192,7 +192,7 @@ Installation dasselbe Schnell-Update als Standard an.
    `.onnx.json`) von [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) nach
    `models/tts/` legen, Pfade in `config.yaml` (`tts.piper.binary`, `tts.piper.voice_model`)
    eintragen. Der Installer erledigt beides inkl. Stimmauswahl und Hörprobe. Danach lässt sich
-   die Stimme im Web-UI (Karte „Stimme“) weiter anpassen: weitere deutsche Stimmen laden,
+   die Stimme im Web-UI (Technik → Karte „Stimme“) weiter anpassen: weitere deutsche Stimmen laden,
    Sprecher (bei Mehrsprecher-Modellen), Tempo, Tonhöhe und Hall - mit Hörprobe im Browser und
    Voreinstellungen wie „Jarvis“. Tonhöhe und Hall rechnet `ffmpeg` nach.
 6. **STT (faster-whisper, lokal)**: Kein manueller Download nötig - das Modell wird beim ersten
@@ -210,7 +210,7 @@ Installation dasselbe Schnell-Update als Standard an.
 
 - Manuellen Redaktions-Durchlauf testen (ohne Scheduler, hängt an `data/queue.json` an):
   `python scripts/run_agent_once.py [music]`
-- Agent-Verhalten anpassen: Prompt über die Web-UI (landet in `data/prompts/music.md`, Standard:
+- Agent-Verhalten anpassen: Prompt über die Web-UI, Redaktion → Tab „Prompt“ (landet in `data/prompts/music.md`, Standard:
   `config/desks/music.md`)
 - Defaults in `config/config.yaml` ändern: vor dem nächsten App-Start/Update committen - eine
   uncommittete Änderung hält die Migration sonst für eine Nutzereinstellung und zieht sie nach

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open home fm · Redaktion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Chivo+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-page="desks">
+  <div class="wrap">
+    <header class="console">
+      <a class="wordmark" href="/index.html">open home<span>.fm</span></a>
+      <nav class="tabs" aria-label="Bereiche">
+        <a href="/index.html">Sendung</a>
+        <a href="/inbox.html">Rufen</a>
+        <a href="/desks.html" aria-current="page">Redaktion</a>
+        <a href="/settings.html">Technik</a>
+      </nav>
+      <div class="onair-status">
+        <div class="lamp" id="lamp" data-state="unknown" role="status">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="lamp-label">…</span>
+        </div>
+        <span class="clock" id="clock"></span>
+      </div>
+    </header>
+    <div class="notices" id="notices" aria-live="polite"></div>
+
+    <main class="page">
+      <div class="desk-cards" id="desk-cards">
+        <section class="card desk-card" id="card-music" aria-labelledby="h-card-music" aria-current="true">
+          <div class="card-head">
+            <h2 id="h-card-music"><a href="#music">Musik</a></h2>
+            <span class="desk-head-right">
+              <span class="state-lamp" id="music-lamp" data-state="idle">
+                <span class="dot" aria-hidden="true"></span><span id="music-lamp-label">…</span>
+              </span>
+              <label class="switch" title="Musikredaktion an/aus">
+                <input type="checkbox" id="music-enabled" aria-label="Musikredaktion eingeschaltet">
+                <span class="track" aria-hidden="true"></span>
+              </label>
+            </span>
+          </div>
+          <div class="fill">
+            <meter id="music-fill" min="0" max="45" low="10" high="30" optimum="45" value="0" aria-labelledby="music-fill-text"></meter>
+            <p class="fill-text" id="music-fill-text">…</p>
+          </div>
+          <div id="music-lines"></div>
+          <div class="card-foot">
+            <button class="btn" id="music-run" type="button">Jetzt planen</button>
+            <span class="note" id="music-run-note" role="status"></span>
+          </div>
+        </section>
+      </div>
+
+      <section class="card" id="detail-music" aria-labelledby="h-detail-music">
+        <div class="detail-head">
+          <h2 id="h-detail-music">Musikredaktion</h2>
+          <div class="subtabs" role="tablist" aria-label="Musikredaktion">
+            <button role="tab" type="button" id="tab-settings" aria-controls="panel-settings" data-tab="settings" aria-selected="true">Einstellungen</button>
+            <button role="tab" type="button" id="tab-prompt" aria-controls="panel-prompt" data-tab="prompt" aria-selected="false" tabindex="-1">Prompt</button>
+            <button role="tab" type="button" id="tab-history" aria-controls="panel-history" data-tab="history" aria-selected="false" tabindex="-1">Verlauf</button>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="panel-settings" aria-labelledby="tab-settings">
+          <div class="field-grid">
+            <div class="field">
+              <label for="s-fill_threshold_minutes">Nachplanen unter (min)</label>
+              <input id="s-fill_threshold_minutes" type="number" min="1" max="120" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="s-block_minutes">Blocklänge (min)</label>
+              <input id="s-block_minutes" type="number" min="5" max="120" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="s-max_queued_program_minutes">Höchstens eingeplant (min)</label>
+              <input id="s-max_queued_program_minutes" type="number" min="10" max="240" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="s-songs_per_announcement">Ansage höchstens alle N Songs</label>
+              <input id="s-songs_per_announcement" type="number" min="1" max="20" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="s-no_repeat_minutes">Keine Wiederholung für (min)</label>
+              <input id="s-no_repeat_minutes" type="number" min="0" max="1440" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="s-max_tool_iterations">Max. Tool-Runden je Lauf</label>
+              <input id="s-max_tool_iterations" type="number" min="1" max="100" step="1" inputmode="numeric">
+            </div>
+          </div>
+
+          <fieldset>
+            <legend>Plugins</legend>
+            <p class="hint" style="margin-bottom:8px">„Nutzen“: die Redaktion kann das Plugin aufrufen. „Kontext“: das Ergebnis wird jedem Lauf automatisch mitgegeben. Installiert und global aktiviert werden Plugins unter <a href="/settings.html">Technik</a>.</p>
+            <table class="check-table">
+              <thead><tr><th scope="col">Plugin</th><th scope="col" class="c">Nutzen</th><th scope="col" class="c">Kontext</th></tr></thead>
+              <tbody id="desk-plugins"></tbody>
+            </table>
+          </fieldset>
+
+          <div class="card-foot">
+            <button class="btn" id="save-desk" type="button">Einstellungen speichern</button>
+            <span class="note" id="desk-note" role="status"></span>
+          </div>
+
+          <details class="advanced reserve" id="reserve">
+            <summary>Reserve fürs Füllprogramm <span class="meta" id="reserve-meta"></span></summary>
+            <p class="hint" style="margin-bottom:8px">Die Musikredaktion hält diese Titel vorrätig. Fällt das LLM aus, spielt der Sender daraus weiter.</p>
+            <ol class="reserve-list" id="reserve-list"></ol>
+          </details>
+        </div>
+
+        <div role="tabpanel" id="panel-prompt" aria-labelledby="tab-prompt" hidden>
+          <div class="card-head">
+            <span class="badge" id="prompt-badge">…</span>
+            <span class="meta" id="prompt-meta"></span>
+          </div>
+          <label for="desk-prompt" hidden>Prompt der Musikredaktion</label>
+          <textarea id="desk-prompt" spellcheck="false" rows="18"></textarea>
+          <div class="card-foot">
+            <button class="btn" id="save-prompt" type="button">Prompt speichern</button>
+            <button class="btn ghost" id="reset-prompt" type="button" hidden>Auf Standard zurücksetzen</button>
+            <span class="note" id="prompt-note" role="status"></span>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="panel-history" aria-labelledby="tab-history" hidden>
+          <p class="hint" style="margin-bottom:12px">Die letzten Läufe der Musikredaktion, mit komplettem Gesprächsverlauf. Die jüngsten liest die Redaktion beim nächsten Lauf mit.</p>
+          <div class="history" id="history-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/desks.js"></script>
+</body>
+</html>
