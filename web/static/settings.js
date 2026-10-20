@@ -128,33 +128,47 @@
   // ---------- Stimme ----------
 
   const VOICE_PRESETS = {
-    neutral: { length_scale: 1.0, pitch_semitones: 0, echo: 0 },
+    neutral: { length_scale: 1.0, noise_scale: 0.667, noise_w: 0.8, pitch_semitones: 0, echo: 0 },
     // Calm, slightly deeper, with a touch of room - the "AI butler" sound.
-    jarvis: { length_scale: 1.08, pitch_semitones: -1.5, echo: 0.3 },
-    night: { length_scale: 1.2, pitch_semitones: -3, echo: 0.5 },
+    jarvis: { length_scale: 1.08, noise_scale: 0.667, noise_w: 0.8, pitch_semitones: -1.5, echo: 0.3 },
+    night: { length_scale: 1.2, noise_scale: 0.667, noise_w: 0.8, pitch_semitones: -3, echo: 0.5 },
   };
 
   let installedVoices = [];
 
   function voiceSettings() {
     return {
+      engine: $("voice-engine").value,
       voice_model: $("voice-model").value,
       speaker: $("voice-speaker-field").hidden ? null : $("voice-speaker").value || null,
       length_scale: parseFloat($("voice-length").value),
+      noise_scale: parseFloat($("voice-noise").value),
+      noise_w: parseFloat($("voice-noise-w").value),
       pitch_semitones: parseFloat($("voice-pitch").value),
       echo: parseFloat($("voice-echo").value),
+      qwen_instruction: $("qwen-instruction").value.trim(),
       text: $("voice-text").value.trim(),
     };
+  }
+
+  function renderVoiceEngine() {
+    const qwen = $("voice-engine").value === "qwen3";
+    $("piper-settings").hidden = qwen || $("voice-engine").value === "none";
+    $("qwen-settings").hidden = !qwen;
   }
 
   function renderVoiceOutputs() {
     const length = parseFloat($("voice-length").value);
     const pitch = parseFloat($("voice-pitch").value);
+    const noise = parseFloat($("voice-noise").value);
+    const noiseW = parseFloat($("voice-noise-w").value);
     const fmt = (n) => n.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     $("voice-length-out").textContent =
       length === 1 ? "normal" : `${fmt(length)}× ${length > 1 ? "langsamer" : "schneller"}`;
     $("voice-pitch-out").textContent =
       pitch === 0 ? "original" : `${pitch > 0 ? "+" : ""}${pitch.toLocaleString("de-DE")} Halbtöne`;
+    $("voice-noise-out").textContent = `${Math.round(noise * 100)} %`;
+    $("voice-noise-w-out").textContent = `${Math.round(noiseW * 100)} %`;
     $("voice-echo-out").textContent = `${Math.round(parseFloat($("voice-echo").value) * 100)} %`;
   }
 
@@ -166,13 +180,25 @@
     if (selected && speakers.includes(selected)) $("voice-speaker").value = selected;
   }
 
+  function voiceLabel(id) {
+    const [, name = id, size] = id.match(/^de_DE-(.+)-(x_low|low|medium|high)$/) || [];
+    if (!size) return id;
+    const displayName = name.replaceAll("_", " ");
+    const sizeLabel = { x_low: "sehr kleines Modell", low: "kleines Modell", medium: "mittleres Modell", high: "großes Modell" }[size];
+    return `${displayName} · ${sizeLabel}`;
+  }
+
   async function loadVoices() {
     const piper = config.tts?.piper || {};
+    const qwen = config.tts?.qwen3 || {};
+    $("voice-engine").value = config.tts?.engine || "piper";
+    $("qwen-instruction").value = qwen.instruction || "Eine klare, ruhige deutsche Radiostimme, natürlich und gut verständlich.";
+    renderVoiceEngine();
     const { installed, catalog } = await api("/api/voice");
     installedVoices = installed;
 
     const configured = piper.voice_model || "";
-    const options = installed.map((v) => `<option value="${esc(v.voice_model)}">${esc(v.id)}</option>`);
+    const options = installed.map((v) => `<option value="${esc(v.voice_model)}">${esc(voiceLabel(v.id))}</option>`);
     if (configured && !installed.some((v) => v.voice_model === configured)) {
       options.unshift(`<option value="${esc(configured)}">${esc(configured)} (fehlt)</option>`);
     }
@@ -181,6 +207,8 @@
     renderSpeakers(piper.speaker);
 
     $("voice-length").value = piper.length_scale ?? 1;
+    $("voice-noise").value = piper.noise_scale ?? 0.667;
+    $("voice-noise-w").value = piper.noise_w ?? 0.8;
     $("voice-pitch").value = piper.pitch_semitones ?? 0;
     $("voice-echo").value = piper.echo ?? 0;
     renderVoiceOutputs();
@@ -193,13 +221,16 @@
   }
 
   function initVoice() {
-    ["voice-length", "voice-pitch", "voice-echo"].forEach((id) => $(id).addEventListener("input", renderVoiceOutputs));
+    $("voice-engine").addEventListener("change", renderVoiceEngine);
+    ["voice-length", "voice-noise", "voice-noise-w", "voice-pitch", "voice-echo"].forEach((id) => $(id).addEventListener("input", renderVoiceOutputs));
     $("voice-model").addEventListener("change", () => renderSpeakers());
 
     document.querySelectorAll("[data-preset]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const preset = VOICE_PRESETS[btn.dataset.preset];
         $("voice-length").value = preset.length_scale;
+        $("voice-noise").value = preset.noise_scale;
+        $("voice-noise-w").value = preset.noise_w;
         $("voice-pitch").value = preset.pitch_semitones;
         $("voice-echo").value = preset.echo;
         renderVoiceOutputs();
@@ -211,12 +242,16 @@
     $("voice-preview").addEventListener("click", async () => {
       const btn = $("voice-preview");
       const settings = voiceSettings();
-      if (!settings.voice_model || !settings.text) {
+      if (settings.engine === "none") {
+        note($("voice-note"), "Bitte zuerst Piper oder Qwen3-TTS auswählen.", "err");
+        return;
+      }
+      if ((settings.engine === "piper" && !settings.voice_model) || !settings.text) {
         note($("voice-note"), "Stimme und Testsatz dürfen nicht leer sein.", "err");
         return;
       }
       btn.disabled = true;
-      note($("voice-note"), "Wird gesprochen…");
+      note($("voice-note"), settings.engine === "qwen3" ? "Qwen wird gestartet; beim ersten Mal werden mehrere GB Modell geladen…" : "Wird gesprochen…");
       try {
         const res = await fetch("/api/voice/preview", { method: "POST", ...jsonBody(settings) });
         if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -232,12 +267,13 @@
     });
 
     $("save-voice").addEventListener("click", () => {
-      if (!$("voice-model").value) {
+      const engine = $("voice-engine").value;
+      if (engine === "piper" && !$("voice-model").value) {
         note($("voice-note"), "Keine Stimme ausgewählt.", "err");
         return;
       }
-      const { text, ...piper } = voiceSettings();
-      patchConfig({ tts: { piper } }, $("voice-note"), "Gespeichert – gilt für die nächsten Ansagen.");
+      const { engine: _engine, text, qwen_instruction, ...piper } = voiceSettings();
+      patchConfig({ tts: { engine, piper, qwen3: { instruction: qwen_instruction } } }, $("voice-note"), "Gespeichert – gilt für die nächsten Ansagen.");
     });
 
     $("voice-download").addEventListener("click", async () => {

@@ -25,6 +25,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+qwen = [
+    "qwen-tts",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

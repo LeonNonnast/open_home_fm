@@ -102,11 +102,17 @@
       <section class="card" aria-labelledby="h-voice">
         <div class="card-head">
           <h2 id="h-voice">Stimme</h2>
-          <span class="meta">Piper · lokal</span>
+          <label class="meta" for="voice-engine">Engine</label>
+          <select id="voice-engine" aria-label="TTS-Engine">
+            <option value="piper">Piper · leichtgewichtig</option>
+            <option value="qwen3">Qwen3-TTS · VoiceDesign</option>
+            <option value="none">Aus</option>
+          </select>
         </div>
+        <div id="piper-settings">
         <div class="field-row">
           <div class="field">
-            <label for="voice-model">Stimme</label>
+            <label for="voice-model">Installierte Stimme</label>
             <select id="voice-model"></select>
           </div>
           <div class="field" id="voice-speaker-field" hidden>
@@ -122,6 +128,14 @@
         <div class="field slider">
           <label for="voice-length">Tempo <output id="voice-length-out" for="voice-length"></output></label>
           <input id="voice-length" type="range" min="0.7" max="1.5" step="0.05">
+        </div>
+        <div class="field slider">
+          <label for="voice-noise">Klangruhe <output id="voice-noise-out" for="voice-noise"></output></label>
+          <input id="voice-noise" type="range" min="0" max="1" step="0.05">
+        </div>
+        <div class="field slider">
+          <label for="voice-noise-w">Aussprachevariation <output id="voice-noise-w-out" for="voice-noise-w"></output></label>
+          <input id="voice-noise-w" type="range" min="0" max="1.2" step="0.05">
         </div>
         <div class="field slider">
           <label for="voice-pitch">Tonhöhe <output id="voice-pitch-out" for="voice-pitch"></output></label>
@@ -144,15 +158,23 @@
           <summary>Weitere Stimmen laden</summary>
           <div class="field-row">
             <div class="field">
-              <label for="voice-catalog">Deutsche Piper-Stimmen</label>
+              <label for="voice-catalog">Weitere deutsche Piper-Stimmen</label>
               <select id="voice-catalog"></select>
             </div>
             <div class="field download">
               <button class="btn ghost" id="voice-download" type="button">Herunterladen</button>
             </div>
           </div>
-          <p class="hint">Quelle: rhasspy/piper-voices auf Hugging Face. „high“ klingt am besten, rechnet auf dem Pi aber spürbar länger.</p>
+          <p class="hint">Zum Vergleich Thorsten „high“ probieren. Das größere Modell kann klarer klingen, braucht aber länger und klingt nicht für alle Ohren besser. Weniger Klangvariation kann Rauschen mindern; Hörproben mit demselben Testsatz vergleichen. Hall für klare Ansagen auf 0 lassen.</p>
         </details>
+        </div>
+        <div id="qwen-settings" hidden>
+          <div class="field">
+            <label for="qwen-instruction">Stimmenbeschreibung</label>
+            <textarea id="qwen-instruction" class="short" rows="3">Eine klare, ruhige deutsche Radiostimme, natürlich und gut verständlich.</textarea>
+          </div>
+          <p class="hint">Benötigt <code>.venv/bin/pip install -e ".[qwen]"</code>. Beim ersten Start lädt Qwen das VoiceDesign-Modell (mehrere GB); mit CUDA-GPU deutlich geeigneter, CPU kann sehr langsam sein.</p>
+        </div>
       </section>
 
       <section class="card" aria-labelledby="h-plugins">

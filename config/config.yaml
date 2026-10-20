@@ -117,7 +117,7 @@ audio:
   fade_seconds: 2
 
 tts:
-  # "piper" (local) | "none"
+  # "piper" (local) | "qwen3" (local, optional extra) | "none"
   engine: piper
   piper:
     binary: "piper"
@@ -127,9 +127,16 @@ tts:
     speaker: null
     # >1 speaks slower, <1 faster.
     length_scale: 1.0
+    # Lower values reduce generated variation; try 0.45 / 0.6 if the voice sounds noisy.
+    noise_scale: 0.667
+    noise_w: 0.8
     # Post-processing via ffmpeg: pitch shift in semitones (tempo stays) and reverb amount 0..1.
     pitch_semitones: 0
     echo: 0
+  qwen3:
+    # Uses Qwen3-TTS VoiceDesign. First synthesis downloads several GB of model weights.
+    device: auto
+    instruction: "Eine klare, ruhige deutsche Radiostimme, natürlich und gut verständlich."
 
 stt:
   # "faster_whisper" (local) | "none"

@@ -37,6 +37,72 @@ class NullTTSEngine(TTSEngine):
         raise RuntimeError("TTS is disabled (tts.engine: none in config.yaml)")
 
 
+_QWEN_MODEL = None
+_QWEN_MODEL_KEY: tuple[str, str] | None = None
+_QWEN_MODEL_LOCK = threading.Lock()
+
+
+class Qwen3TTSEngine(TTSEngine):
+    """Optional local Qwen3-TTS voice design; model and package load only when selected."""
+
+    MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+
+    def __init__(self, cache_dir: Path, instruction: str, device: str = "auto"):
+        self.cache_dir = cache_dir
+        self.instruction = instruction.strip() or "Eine klare, ruhige deutsche Radiostimme, natürlich und gut verständlich."
+        self.device = device
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _model(self):
+        global _QWEN_MODEL, _QWEN_MODEL_KEY
+        try:
+            import torch
+            from qwen_tts import Qwen3TTSModel
+        except ImportError as exc:
+            raise RuntimeError('Qwen3-TTS fehlt. Installiere es mit: .venv/bin/pip install -e ".[qwen]"') from exc
+
+        device = self.device
+        if device == "auto":
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        key = (self.MODEL_ID, device)
+        with _QWEN_MODEL_LOCK:
+            if _QWEN_MODEL is None or _QWEN_MODEL_KEY != key:
+                kwargs = {"device_map": device}
+                if device.startswith("cuda"):
+                    kwargs["dtype"] = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+                    kwargs["attn_implementation"] = "sdpa"
+                else:
+                    kwargs["dtype"] = torch.float32
+                try:
+                    _QWEN_MODEL = Qwen3TTSModel.from_pretrained(self.MODEL_ID, **kwargs)
+                except Exception as exc:
+                    raise RuntimeError(f"Qwen3-TTS konnte Modell {self.MODEL_ID} nicht laden: {exc}") from exc
+                _QWEN_MODEL_KEY = key
+            return _QWEN_MODEL
+
+    def render(self, text: str, out_path: Path) -> None:
+        with RENDER_LOCK:
+            model = self._model()
+            try:
+                import soundfile as sf
+                wavs, sample_rate = model.generate_voice_design(
+                    text=text,
+                    language="German",
+                    instruct=self.instruction,
+                )
+                sf.write(str(out_path), wavs[0], sample_rate)
+            except Exception as exc:
+                out_path.unlink(missing_ok=True)
+                raise RuntimeError(f"Qwen3-TTS Synthese fehlgeschlagen: {exc}") from exc
+
+    def synthesize(self, text: str) -> Path:
+        key = hashlib.sha256(f"qwen3|{self.MODEL_ID}|{self.device}|{self.instruction}|{text}".encode()).hexdigest()[:16]
+        out_path = self.cache_dir / f"jingle_{key}.wav"
+        if not out_path.exists():
+            self.render(text, out_path)
+        return out_path
+
+
 @dataclass(frozen=True)
 class VoiceSettings:
     """Everything that shapes how the moderator sounds - editable in the web UI's voice card."""
@@ -44,6 +110,8 @@ class VoiceSettings:
     voice_model: str
     speaker: str | None = None  # name from the model's speaker_id_map, multi-speaker models only
     length_scale: float = 1.0  # >1 speaks slower
+    noise_scale: float = 0.667
+    noise_w: float = 0.8
     pitch_semitones: float = 0.0  # post-processed with ffmpeg, keeps the tempo
     echo: float = 0.0  # 0..1, subtle room/"AI" reverb via ffmpeg
 
@@ -53,12 +121,14 @@ class VoiceSettings:
             voice_model=str(piper_cfg.get("voice_model", "")),
             speaker=(str(piper_cfg["speaker"]) if piper_cfg.get("speaker") not in (None, "") else None),
             length_scale=float(piper_cfg.get("length_scale", 1.0) or 1.0),
+            noise_scale=float(piper_cfg.get("noise_scale", 0.667)),
+            noise_w=float(piper_cfg.get("noise_w", 0.8)),
             pitch_semitones=float(piper_cfg.get("pitch_semitones", 0.0) or 0.0),
             echo=float(piper_cfg.get("echo", 0.0) or 0.0),
         )
 
     def cache_key(self, text: str) -> str:
-        raw = f"{self.voice_model}|{self.speaker}|{self.length_scale}|{self.pitch_semitones}|{self.echo}|{text}"
+        raw = f"{self.voice_model}|{self.speaker}|{self.length_scale}|{self.noise_scale}|{self.noise_w}|{self.pitch_semitones}|{self.echo}|{text}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -140,6 +210,7 @@ class PiperTTSEngine(TTSEngine):
             command += ["--speaker", str(speaker_id)]
         if self.settings.length_scale != 1.0:
             command += ["--length_scale", str(self.settings.length_scale)]
+        command += ["--noise_scale", str(self.settings.noise_scale), "--noise_w", str(self.settings.noise_w)]
 
         logger.info("Synthesizing jingle (%d chars) with piper", len(text))
         result = subprocess.run(command, input=text.encode("utf-8"), capture_output=True)
@@ -190,5 +261,12 @@ def create_tts_engine(config: dict, cache_dir: Path) -> TTSEngine:
         )
     if engine == "none":
         return NullTTSEngine()
+    if engine == "qwen3":
+        qwen_cfg = tts_cfg.get("qwen3", {})
+        return Qwen3TTSEngine(
+            cache_dir=cache_dir,
+            instruction=str(qwen_cfg.get("instruction", "")),
+            device=str(qwen_cfg.get("device", "auto")),
+        )
 
     raise ValueError(f"Unknown TTS engine: {engine}")

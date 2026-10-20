@@ -139,6 +139,7 @@ Nur für die jeweils gewählte Option (prüft der Installer am Ende und listet o
 | --- | --- | --- |
 | Spotify | Spotify Premium + raspotify mit `LIBRESPOT_NAME` = `music.spotify.device_name` | `curl -sL https://dtcooper.github.io/raspotify/install.sh \| sh`, Name in `/etc/raspotify/conf` setzen, `sudo systemctl restart raspotify` (übernimmt der Installer) |
 | Piper-TTS | `piper` + Stimmmodell (`.onnx` + `.onnx.json`) | Der Installer installiert `piper-tts` in die venv, lässt eine deutsche Stimme auswählen (mit Hörprobe) und lädt sie nach `models/tts/` |
+| Qwen3-TTS | Optionales Python-Paket und ausreichend Arbeitsspeicher; CUDA-GPU empfohlen | `.venv/bin/pip install -e ".[qwen]"`; Modellgewichte werden beim ersten Syntheseversuch geladen |
 | Hue-Plugin | Philips Hue Bridge im selben Netz | Installer koppelt per Link-Taste |
 
 ### Schnellstart
@@ -220,13 +221,16 @@ Installation dasselbe Schnell-Update als Standard an.
      `.venv/bin/python scripts/spotify_login.py` ausführen (funktioniert auch headless: Link auf
      PC/Handy öffnen, weitergeleitete URL zurück ins Terminal kopieren). Der Installer erledigt
      das automatisch. Spotify Premium nötig für Playback-Steuerung über die Web API.
-5. **TTS (Piper, lokal)**: `.venv/bin/pip install piper-tts` und ein Stimmmodell (`.onnx` +
+5. **TTS (lokal)**: Piper ist der leichte Standard: `.venv/bin/pip install piper-tts` und ein Stimmmodell (`.onnx` +
    `.onnx.json`) von [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) nach
    `models/tts/` legen, Pfade in `config.yaml` (`tts.piper.binary`, `tts.piper.voice_model`)
    eintragen. Der Installer erledigt beides inkl. Stimmauswahl und Hörprobe. Danach lässt sich
    die Stimme im Web-UI (Technik → Karte „Stimme“) weiter anpassen: weitere deutsche Stimmen laden,
    Sprecher (bei Mehrsprecher-Modellen), Tempo, Tonhöhe und Hall - mit Hörprobe im Browser und
-   Voreinstellungen wie „Jarvis“. Tonhöhe und Hall rechnet `ffmpeg` nach.
+   Voreinstellungen wie „Jarvis“. Tonhöhe und Hall rechnet `ffmpeg` nach. Qwen3-TTS ist eine
+   optionale lokale Alternative: `.venv/bin/pip install -e ".[qwen]"`, danach in Technik → Stimme
+   als Engine wählen. Die erste Hörprobe lädt das VoiceDesign-Modell (mehrere GB); eine CUDA-GPU
+   wird empfohlen, CPU-Synthese kann sehr langsam sein. Stimme und Ansagetext bleiben lokal.
 6. **STT (faster-whisper, lokal)**: Kein manueller Download nötig - das Modell wird beim ersten
    Transkriptions-Aufruf automatisch heruntergeladen (Internetverbindung beim ersten Mal nötig).
 7. **Audio-Ausgang**: `audio.output_device` in config.yaml auf den ALSA/Pulse-Sink zeigen lassen,
